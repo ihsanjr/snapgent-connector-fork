@@ -52,6 +52,19 @@ The default target. Automatically connects to the workspace currently open in VS
 </tr>
 </table>
 
+### Antigravity IDE Integration (Fork Notes)
+
+This fork adds **Antigravity IDE** (`antigravity`) alongside VS Code with full workspace probing, skill loading, and bridge stability improvements:
+
+1. **Start the Bridge**: Run `start.bat` (`ws://127.0.0.1:17613`). `setup-config.ps1` / `setup-config.py` detects `antigravity_mcp.py` and registers the `antigravity` server in `config.json`.
+2. **Open a Workspace**: Open your project folder in **Antigravity IDE** so the `list_dir` workspace readiness probe succeeds.
+3. **Select Target in Extension**: Choose **Antigravity IDE** in the Snapgent chat bar target selector, wait for `Ready.`, and click **Start**.
+
+**Key Fork Changes:**
+- **First-Class `antigravity` Target (`snapgent-extension/core/main.js`)**: Added `Antigravity IDE` to target selector, workspace readiness probing (`list_dir`), `.snapgent/skills` loading, and Antislop support.
+- **Bridge Startup Stability (`bridge.py` / `bridge.exe`)**: Enabled `reuse_address=True` on port `17613`, increased MCP `initialize` and `tools/list` timeouts to `30s`, and bundled `websockets` into `bridge.exe`.
+- **Clean Startup (`start.bat`)**: Disabled automatic `EffectCraft` launch on startup and ensured lingering `bridge.exe` processes terminate cleanly before starting.
+
 ---
 
 ## `01` &nbsp; How it works
