@@ -1,6 +1,6 @@
-<div align="center">
+﻿<div align="center">
 
-<a href="https://github.com/herdodp/snapgent-connector">
+<a href="https://github.com/ihsanjr/snapgent-connector-fork">
 <img src="https://readme-typing-svg.demolab.com?font=JetBrains+Mono&weight=800&size=52&duration=3000&pause=1000&color=FACC15&center=true&vCenter=true&width=700&height=90&lines=snapgentV3;+Connector+agent+MCP" alt="snapgentV3: Connector agent for VS Code" />
 </a>
 
@@ -10,7 +10,7 @@
 
 [![License](https://img.shields.io/badge/LICENSE-GPL--3.0-FACC15?style=flat-square&labelColor=111111&logo=opensourceinitiative&logoColor=FACC15)](LICENSE)
 [![Manifest](https://img.shields.io/badge/MANIFEST-V3-FACC15?style=flat-square&labelColor=111111&logo=googlechrome&logoColor=FACC15)](https://developer.chrome.com/docs/extensions/develop/migrate/what-is-mv3/)
-[![Release](https://img.shields.io/badge/RELEASE-V3.9.11-FACC15?style=flat-square&labelColor=111111&logo=semanticrelease&logoColor=FACC15)](https://github.com/herdodp/snapgent-connector/releases/tag/V3.9.11)
+[![Release](https://img.shields.io/badge/RELEASE-V3.9.11-FACC15?style=flat-square&labelColor=111111&logo=semanticrelease&logoColor=FACC15)](https://github.com/ihsanjr/snapgent-connector-fork/releases/tag/V3.9.11)
 [![MCP](https://img.shields.io/badge/PROTOCOL-MCP-FACC15?style=flat-square&labelColor=111111&logo=modelcontextprotocol&logoColor=FACC15)](https://modelcontextprotocol.io/)
 
 </div>
@@ -90,7 +90,7 @@ VS Code's MCP server is configured locally by `start.bat`; it detects the open V
 
 Prefer not to load an extension or run the bridge yourself? **Snapgent App** is a standalone desktop app (Electron) with a built-in AI browser, a toolbar, and the bridge built in. It needs no Chrome/Edge, no `start.bat`, no Python and no Node.js.
 
-**Download** (`app-v0.1.1`): [Releases > app-v0.1.1](https://github.com/herdodp/snapgent-connector/releases/tag/app-v0.1.1)
+**Download** (`app-v0.1.1`): [Releases > app-v0.1.1](https://github.com/ihsanjr/snapgent-connector-fork/releases/tag/app-v0.1.1)
 
 | File | Use |
 |---|---|
@@ -158,7 +158,7 @@ npm run dist     # build the Windows installer into dist/
 
 **① Load the extension**
 
-1. Download and extract the [latest SnapgentV3 release](https://github.com/herdodp/snapgent-connector/releases/tag/V3.9.11).
+1. Download and extract the [latest SnapgentV3 release](https://github.com/ihsanjr/snapgent-connector-fork/releases/tag/V3.9.11).
 2. Open `edge://extensions` (Edge) or `chrome://extensions` (Chrome).
 3. Enable **Developer mode**.
 4. Click **Load unpacked** and select the `snapgent-extension` folder.
@@ -246,7 +246,7 @@ Tip: close the `.docx` file in Word (or any other viewer) before asking the AI t
 
 The extension and the bridge are two separate parts, and each one has to be updated. Reloading only the extension does not update the bridge, and the **Restart** button in the extension popup only restarts the MCP servers, it does not load new bridge code.
 
-1. Get the new version: run `git pull` in the project folder, or download and extract the [latest release](https://github.com/herdodp/snapgent-connector/releases/latest).
+1. Get the new version: run `git pull` in the project folder, or download and extract the [latest release](https://github.com/ihsanjr/snapgent-connector-fork/releases/latest).
 2. Stop the old bridge: close the terminal window that is running `start.bat`, `MacOS_Start.command` or `Linux_Start.sh`.
 3. Start the bridge again with the same launcher. The launcher replaces an old bridge still holding port 17613. On Linux it first checks that the process on the port is a Snapgent bridge, and stops with an error if it belongs to another program.
 4. Reload the extension at `chrome://extensions` (or `edge://extensions`), then refresh open chat tabs (F5).
@@ -341,6 +341,6 @@ snapgent-full/
 
 **Built for creators who want to spend more time making.**
 
-[Latest release V3.9.11](https://github.com/herdodp/snapgent-connector/releases/tag/V3.9.11) · [Issues](https://github.com/herdodp/snapgent-connector/issues) · [License](LICENSE)
+[Latest release V3.9.11](https://github.com/ihsanjr/snapgent-connector-fork/releases/tag/V3.9.11) · [Issues](https://github.com/ihsanjr/snapgent-connector-fork/issues) · [License](LICENSE)
 
 </div>
