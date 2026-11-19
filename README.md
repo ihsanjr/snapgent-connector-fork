@@ -1,4 +1,4 @@
-﻿<div align="center">
+<div align="center">
 
 <a href="https://github.com/ihsanjr/snapgent-connector-fork">
 <img src="https://readme-typing-svg.demolab.com?font=JetBrains+Mono&weight=800&size=52&duration=3000&pause=1000&color=FACC15&center=true&vCenter=true&width=700&height=90&lines=snapgentV3;+Connector+agent+MCP" alt="snapgentV3: Connector agent for VS Code" />
@@ -31,6 +31,8 @@
 snapgentV3 is a browser extension plus a local bridge that connects a normal AI chat to **VS Code**. It automatically uses the currently open workspace. Describe what you want in plain language — the extension forwards commands to the selected server through the local bridge, and returns the results to chat.
 
 **Free and open source — no API key, subscription, or sign-in required.** snapgentV3 automatically uses the currently open VS Code workspace.
+
+> **Fork Attribution:** This repository is a maintained fork of the original [`herdodp/snapgent-connector`](https://github.com/herdodp/snapgent-connector) project, extended with first-class **Antigravity IDE** MCP support and local bridge stability fixes.
 
 ---
 
