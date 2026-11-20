@@ -17,10 +17,10 @@ class VscodeMcpTests(unittest.TestCase):
         self.addCleanup(self.root_patch.stop)
         self.addCleanup(self.temp.cleanup)
 
-    def test_catalog_has_28_unique_tools(self):
+    def test_catalog_has_29_unique_tools(self):
         names = [tool["name"] for tool in vscode_mcp.TOOLS]
-        self.assertEqual(len(names), 28)
-        self.assertEqual(len(set(names)), 28)
+        self.assertEqual(len(names), 29)
+        self.assertEqual(len(set(names)), 29)
         for name in ("delete_file", "apply_patch", "git_add", "git_commit"):
             self.assertIn(name, names)
 

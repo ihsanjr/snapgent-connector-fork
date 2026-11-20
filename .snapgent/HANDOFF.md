@@ -35,3 +35,9 @@
   - Note: `claude` skipped for now due to organization account block; Gemini `UI_NOISE` filter added in `providers/gemini.js` (syntax checked, ready for live re-verify after reload).
 - [ ] **Standalone App Sync (`snapgent-app/extension`)**
   - Port Multi-Tab Subagent changes into `snapgent-app/extension` when preparing the next desktop build.
+- [ ] **VS Code / Antigravity IDE Extension (`.vsix`)**
+  - Build a unified VS Code / Antigravity companion extension (single `.vsix` codebase) to integrate SnapgentV3 directly inside the IDE.
+  - **Core & Bridge Integration:** Accurate native workspace detection (`workspaceFolders`, active editor/cursor), status bar indicator for bridge connection (`port 17613`) with one-click start/restart, and auto-switch active window tracking across multiple IDE windows.
+  - **Editor & Context Tools:** Right-click/shortcut *"Send to Snapgent"* (selected code + file path + line range), native `get_diagnostics` (Problems panel errors/warnings), and live native diff preview with one-click Accept/Revert for AI edits.
+  - **Sidebar Monitor & Skills:** Real-time MCP command activity log, active subagent monitor (`gemini`, `chatgpt`, `qwen`, `deepseek`) with Emergency Stop, and a visual `.snapgent/skills/` toggle/manager.
+  - **Terminal Execution:** Visible Integrated Terminal execution for `run_command` so output is live and interruptible (`Ctrl+C`).

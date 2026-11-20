@@ -95,7 +95,33 @@ def _vscode_storage_paths() -> List[Path]:
     ]
 
 
+def _snapgent_active_workspace(expected_ide: str = "vscode") -> Optional[Path]:
+    state_file = Path.home() / ".snapgent" / "active-workspace.json"
+    if not state_file.is_file():
+        return None
+    try:
+        data = json.loads(state_file.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    ide = str(data.get("ide") or "").strip().lower()
+    if ide and ide != expected_ide:
+        return None
+    workspace = data.get("workspace")
+    if not isinstance(workspace, str) or not workspace.strip():
+        return None
+    try:
+        candidate = Path(workspace).resolve()
+    except (OSError, ValueError):
+        return None
+    return candidate if candidate.is_dir() else None
+
+
 def get_root() -> Path:
+    synced = _snapgent_active_workspace("vscode")
+    if synced is not None:
+        return synced
     active = _vscode_active_folder()
     if active is None:
         raise RuntimeError("Open a project folder in VS Code before using the VS Code MCP server.")

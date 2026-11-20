@@ -1,0 +1,60 @@
+{
+  "name": "snapgent-companion",
+  "displayName": "SnapgentV3 Companion",
+  "description": "Companion extension for SnapgentV3 in VS Code and Antigravity IDE: Bridge status bar, active workspace sync, Send to Snapgent, and Quick Skills manager.",
+  "version": "0.1.0",
+  "publisher": "snapgent",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "snapgent.openMenu",
+        "title": "Snapgent: Open Bridge Menu"
+      },
+      {
+        "command": "snapgent.sendSelection",
+        "title": "Snapgent: Send Selection to Snapgent"
+      },
+      {
+        "command": "snapgent.manageSkills",
+        "title": "Snapgent: Manage Skills"
+      },
+      {
+        "command": "snapgent.syncWorkspace",
+        "title": "Snapgent: Sync Active Workspace Now"
+      },
+      {
+        "command": "snapgent.restartMcp",
+        "title": "Snapgent: Restart MCP Servers"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "snapgent.sendSelection",
+          "when": "editorHasSelection",
+          "group": "navigation@99"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "SnapgentV3 Companion",
+      "properties": {
+        "snapgent.bridgePort": {
+          "type": "number",
+          "default": 17613,
+          "description": "Local WebSocket port used by SnapgentV3 bridge.py."
+        }
+      }
+    }
+  }
+}

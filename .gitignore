@@ -20,8 +20,9 @@ build-fix/
 vscode_mcp.exe.old
 config.json.bak-*
 
-# Zip files
+# Zip files & VSIX packages
 *.zip
+*.vsix
 
 # Local dev / diagnostic tools
 probe.py
