@@ -579,6 +579,17 @@ class Bridge:
                 },
             )
             return
+        started_at = asyncio.get_running_loop().time()
+        await self.broadcast(
+            {
+                "type": "tool_progress",
+                "phase": "start",
+                "id": request_id,
+                "server": server.server_id,
+                "tool": tool_name,
+                "name": name,
+            }
+        )
         try:
             result = await server.call_tool(tool_name, arguments, timeout_seconds)
             text_parts = []
@@ -599,7 +610,8 @@ class Bridge:
             if not text_parts and structured is not None:
                 text_parts.append(json.dumps(structured, ensure_ascii=False))
             text = "\n".join(text_parts)
-            if result.get("isError"):
+            is_err = bool(result.get("isError"))
+            if is_err:
                 await self._send_client(
                     websocket,
                     {"type": "tool_result", "id": request_id, "ok": False, "error": text or "MCP tool failed."},
@@ -609,6 +621,20 @@ class Bridge:
                     websocket,
                     {"type": "tool_result", "id": request_id, "ok": True, "text": text, "images": images},
                 )
+            duration_ms = int((asyncio.get_running_loop().time() - started_at) * 1000)
+            await self.broadcast(
+                {
+                    "type": "tool_progress",
+                    "phase": "end",
+                    "id": request_id,
+                    "server": server.server_id,
+                    "tool": tool_name,
+                    "name": name,
+                    "ok": not is_err,
+                    "duration_ms": duration_ms,
+                    "summary": text[:120].replace("\n", " "),
+                }
+            )
             log(f"<- {name} ({text[:120].replace(chr(10), ' ')})")
         except (asyncio.TimeoutError, RuntimeError, OSError, ValueError) as error:
             message = str(error)
@@ -621,6 +647,20 @@ class Bridge:
                     "kind": "timeout" if isinstance(error, asyncio.TimeoutError) else "tool_error",
                     "error": message,
                 },
+            )
+            duration_ms = int((asyncio.get_running_loop().time() - started_at) * 1000)
+            await self.broadcast(
+                {
+                    "type": "tool_progress",
+                    "phase": "end",
+                    "id": request_id,
+                    "server": server.server_id,
+                    "tool": tool_name,
+                    "name": name,
+                    "ok": False,
+                    "duration_ms": duration_ms,
+                    "summary": message[:120].replace("\n", " "),
+                }
             )
             log(f"<- {name} ERROR: {message[:MAX_LOG_CHARS]}")
 

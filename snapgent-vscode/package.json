@@ -1,8 +1,8 @@
 {
   "name": "snapgent-companion",
   "displayName": "SnapgentV3 Companion",
-  "description": "Companion extension for SnapgentV3 in VS Code and Antigravity IDE: Bridge status bar, active workspace sync, Send to Snapgent, and Quick Skills manager.",
-  "version": "0.1.0",
+  "description": "Companion extension for SnapgentV3 in VS Code and Antigravity IDE: Bridge status bar, live Sidebar Webview Preview, active workspace sync, Send to Snapgent, and Quick Skills manager.",
+  "version": "0.2.0",
   "publisher": "snapgent",
   "engines": {
     "vscode": "^1.85.0"
@@ -15,6 +15,24 @@
   ],
   "main": "./extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "snapgent-sidebar",
+          "title": "SnapgentV3",
+          "icon": "media/snapgent-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "snapgent-sidebar": [
+        {
+          "type": "webview",
+          "id": "snapgent.sidebarView",
+          "name": "Bridge Preview"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "snapgent.openMenu",
