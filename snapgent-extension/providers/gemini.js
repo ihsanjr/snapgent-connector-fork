@@ -77,9 +77,10 @@ const ZSProvider = (() => {
   // prefix broke the core's anchored matching (e.g. /^Output of '/), so ALL
   // text extraction walks the tree and skips those (and any excluded) subtrees.
   const SR_HIDDEN = ".cdk-visually-hidden, [class*='screen-reader']";
+  const UI_NOISE = "mat-chip-set, mat-chip-listbox, mat-chip, [class*='follow-up'], [class*='followup'], [class*='suggestion'], [class*='elicitation'], button";
   function textWithout(root, excludeSel) {
     if (!root) return "";
-    const skip = SR_HIDDEN + (excludeSel ? ", " + excludeSel : "");
+    const skip = SR_HIDDEN + ", " + UI_NOISE + (excludeSel ? ", " + excludeSel : "");
     let t = "";
     const walk = (n) => {
       if (n.nodeType === 3) { t += n.nodeValue; return; }

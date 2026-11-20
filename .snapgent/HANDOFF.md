@@ -10,9 +10,11 @@
    - Supported canonical providers: `claude`, `chatgpt`, `qwen`, `deepseek`, `gemini`, `grok`, `mistral`, `meta`, `kimi`, `glm`, `arena`, `ptero`.
    - Supported aliases (`SUBAGENT_PROVIDER_ALIASES`): `gpt`, `openai`, `chatgpt-cm`, `anthropic`, `google`, `zai`, `z.ai`, `chatglm`, `qwen-net`, `meta-ai`, `lechat`.
    - Unknown providers return an explicit error listing all supported provider names rather than silently falling back.
-2. **Anti-Throttling Hydration, Focus Queue & Stage Diagnostics (`snapgent-extension/background.js`)**
-   - Child tabs open active briefly so Chromium/Edge hydrates heavy SPA frameworks immediately without background throttling, serialized via `enqueueSubagentFocus` (`subagentFocusChain` / `subagentFocusPending`) to prevent focus races and restore focus to `parentTabId` once pending focus work drains.
-   - Tracks session lifecycle stages (`creating_tab`, `loading_tab`, `handshaking_content_script`, `running_task`) and cleans up child tabs and timers via `settleSubagent` and `chrome.tabs.onRemoved`.
+2. **Anti-Throttling Hydration, Focus Queue & Stage Diagnostics (`snapgent-extension/background.js`, `snapgent-extension/core/main.js`)**
+   - Child tabs open active so Chromium/Edge hydrates heavy SPA frameworks without background throttling, serialized via `enqueueSubagentFocus` (`subagentFocusChain` / `subagentFocusPending`) to prevent focus races and restore focus to `parentTabId` once pending focus work drains.
+   - Split focus-release strategy: `core/main.js` emits `zs-subagent-submitted` right after `submitAndGetBase`. General providers release focus on `zs-subagent-submitted` (with a 35s safety guard), while `chatgpt`, `gemini`, `qwen`, and `deepseek` use `holdUntilDone` to keep focus until `zs-subagent-done` (or session settlement/tab close) so background throttling does not stall streaming/DOM updates.
+   - Filtered Gemini UI follow-up/suggestion chips (`UI_NOISE` selector list in `textWithout()`) in `snapgent-extension/providers/gemini.js` so chip text is not appended to scraped responses.
+   - Tracks session lifecycle stages (`creating_tab`, `loading_tab`, `handshaking_content_script`, `running_task`) and cleans up child tabs, timers, and focus guards via `settleSubagent` and `chrome.tabs.onRemoved`.
 3. **Single-Turn Immediate Bootstrap & Parallel Batch Runner (`snapgent-extension/core/main.js`)**
    - Combines system prompt and delegated task in one initial turn to halve startup latency, and supports `spawn_subagents` (`spawnSubagentBatch` via `Promise.all` up to `MAX_PARALLEL_SUBAGENTS = 6`).
 4. **Agent Prompt Exposure (`snapgent-extension/core/config.js`)**
@@ -26,7 +28,10 @@
   - Added serialized `enqueueSubagentFocus` in `background.js` so multiple child tabs hydrate sequentially without focus race conditions before restoring focus to `parentTabId`.
 - [x] **Unit & Integration Tests (`snapgent-extension/test-background.js`)**
   - Added Node tests covering `SUBAGENT_PROVIDER_URLS`, `SUBAGENT_PROVIDER_ALIASES`, unknown-provider error responses, batch limits, and `settleSubagent` session/tab cleanup.
-- [ ] **Live Multi-Provider Smoke Verification**
-  - Reload unpacked `snapgent-extension` in Chrome/Edge and run live `spawn_subagent` / `spawn_subagents` checks across `claude`, `chatgpt`, `qwen`, and `deepseek`.
+- [x] **Live Multi-Provider Smoke Verification**
+  - Verified `chatgpt` live via `spawn_subagent` with `auto_close: true` (`SUBAGENT_OK`, resolving the previous 240s `running_task` timeout).
+  - Verified parallel `spawn_subagents` (`gemini` + `chatgpt`) with `auto_close: true` hands-free without manual tab switching (`GEMINI_OK` + `CHATGPT_OK`).
+  - Verified parallel `spawn_subagents` (`qwen` + `deepseek` + `chatgpt`) with `auto_close: true` hands-free after adding `qwen` and `deepseek` to `holdUntilDone` (`QWEN_OK`, `DEEPSEEK_OK`, `CHATGPT_OK`).
+  - Note: `claude` skipped for now due to organization account block; Gemini `UI_NOISE` filter added in `providers/gemini.js` (syntax checked, ready for live re-verify after reload).
 - [ ] **Standalone App Sync (`snapgent-app/extension`)**
   - Port Multi-Tab Subagent changes into `snapgent-app/extension` when preparing the next desktop build.

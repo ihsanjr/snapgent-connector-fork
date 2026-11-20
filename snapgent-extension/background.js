@@ -444,6 +444,10 @@ function settleSubagent(subagentId, payload) {
   if (!session) return false;
   subagentSessions.delete(subagentId);
   clearTimeout(session.timer);
+  if (typeof session.releaseFocus === "function") {
+    try { session.releaseFocus(); } catch (_) {}
+    session.releaseFocus = null;
+  }
   if (session.autoClose && typeof session.childTabId === "number") {
     chrome.tabs.remove(session.childTabId).catch(() => {});
   }
@@ -585,13 +589,38 @@ async function spawnSubagentTab(msg, sender) {
 
       stage = "handshaking_content_script";
       if (sess) sess.stage = stage;
-      return await deliverSubagentBoot(childTabId, {
+      const boot = await deliverSubagentBoot(childTabId, {
         type: "zs-subagent-start",
         subagentId,
         task,
         targetServer: msg.target_server || "vscode",
         allowTools: msg.allow_tools !== false,
       }, 20000);
+      if (!boot || !boot.ok) return boot;
+
+      stage = "running_task";
+      if (sess) sess.stage = stage;
+
+      // Keep the child tab active until prompt submission (or full completion for
+      // SPA providers that throttle streaming/DOM updates in background).
+      const holdUntilDone = ["chatgpt", "gemini", "qwen", "deepseek"].includes(resolvedProvider);
+      await new Promise((done) => {
+        let finished = false;
+        const release = () => {
+          if (finished) return;
+          finished = true;
+          if (focusGuard) clearTimeout(focusGuard);
+          done();
+        };
+        const focusGuard = holdUntilDone ? null : setTimeout(release, 35000);
+        const activeSess = subagentSessions.get(subagentId);
+        if (!activeSess) {
+          release();
+          return;
+        }
+        activeSess.releaseFocus = release;
+      });
+      return boot;
     });
 
     if (!subagentSessions.has(subagentId)) return;
@@ -665,6 +694,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       case "spawn_subagents": {
         const r = await spawnSubagentBatch(msg, sender);
         sendResponse(r);
+        break;
+      }
+      case "zs-subagent-submitted": {
+        const session = subagentSessions.get(msg.subagentId);
+        const holdUntilDone = session && ["chatgpt", "gemini", "qwen", "deepseek"].includes(session.provider);
+        if (session && !holdUntilDone && typeof session.releaseFocus === "function") {
+          try { session.releaseFocus(); } catch (_) {}
+          session.releaseFocus = null;
+        }
+        sendResponse({ ok: Boolean(session) });
         break;
       }
       case "zs-subagent-done": {

@@ -71,7 +71,7 @@ const ZSProvider = (() => {
     // is exactly why Start reported
     // "reply was never read (0 chars) - message DOM not matched".
     // The structural probes are APPENDED, so older layouts keep working.
-    msg: '[data-message-role],[data-message-author-role],[class*="DilResponseRoot"],[data-turn-key]',
+    msg: '[data-message-role],[data-message-author-role],[class*="DilResponseRoot"],[data-content-search-unit-key],[data-turn-key]',
     userRole: "user",
     assistantRole: "assistant",
     reply: ".markdown",
@@ -130,9 +130,16 @@ const ZSProvider = (() => {
   //     <div …><h4 class="sr-only"><span>ChatGPT said:</span></h4>…reply…</div>
   //   </div>
   const isTurnKeyItem = (item) => !!(item && item.matches && item.matches('[data-turn-key]'));
+  const isSearchUnitItem = (item) => !!(item && item.matches && item.matches('[data-content-search-unit-key]'));
   const role = (item) => {
     const attr = item && item.getAttribute ? (item.getAttribute("data-message-author-role") || item.getAttribute("data-message-role")) : null;
     if (attr) return attr;
+    if (isSearchUnitItem(item)) {
+      const roleEl = item.querySelector && item.querySelector('[data-conversation-role]');
+      const convRole = roleEl && roleEl.getAttribute ? roleEl.getAttribute("data-conversation-role") : null;
+      if (convRole) return convRole;
+      return item.querySelector && item.querySelector('[class*="group/user-message"]') ? S.userRole : S.assistantRole;
+    }
     // New markup: the container itself carries the turn, the role lives inside it.
     if (isTurnKeyItem(item)) return "turn";
     return null;
@@ -398,7 +405,18 @@ const ZSProvider = (() => {
   }
 
   // ── DOM primitives ────────────────────────────────────────────────────────
-  const allItems = () => [...document.querySelectorAll(S.msg)];
+  const allItems = () => {
+    const raw = [...document.querySelectorAll(S.msg)];
+    // Logged-in 2026-11 layout wraps both user and assistant [data-content-search-unit-key]
+    // blocks inside one [data-turn-key]. Drop the outer wrapper when inner units exist so
+    // hiding a user prompt with .zs-hidden never hides the assistant reply.
+    return raw.filter((el) => {
+      if (isTurnKeyItem(el) && el.querySelector('[data-content-search-unit-key],[data-message-role],[data-message-author-role]')) {
+        return false;
+      }
+      return true;
+    });
+  };
   const assistantItems = () => allItems().filter(isAssistantItem);
   const assistantCount = () => assistantItems().length;
   const userCount = () => allItems().filter(isUserItem).length;
@@ -432,7 +450,9 @@ const ZSProvider = (() => {
   // misses and the resume watchdog re-fires a historical tool.
   const itemKey = (item) => {
     if (!item || !item.getAttribute) return null;
-    return item.getAttribute("data-turn-key")
+    return item.getAttribute("data-chatgpt-search-message-ids")
+      || item.getAttribute("data-content-search-unit-key")
+      || item.getAttribute("data-turn-key")
       || item.getAttribute("data-message-id")
       || null;
   };
@@ -701,7 +721,7 @@ const ZSProvider = (() => {
     const mds = replyNodes(item);
     return {
       present: true,
-      reply: mds.map((m) => textWithout(m, ".zs-chip, [class*='group/user-message']")).join("\n").replace(SR_REPLY, "").trim(),
+      reply: mds.map((m) => textWithout(m, ".zs-chip, [class*='group/user-message']")).join("\n").replace(SR_REPLY, "").replace(/^\s*chatgpt\s*\n+/i, "").trim(),
       thinking: "", // reasoning is gated by the stop button, not parsed as text
       item,
     };

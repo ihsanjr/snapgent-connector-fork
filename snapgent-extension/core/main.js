@@ -5042,6 +5042,7 @@
         "summary of your findings or work.\n\n" +
         `Task:\n${msg.task}`;
       const base = await submitAndGetBase(combinedPrompt);
+      bg({ type: "zs-subagent-submitted", subagentId: msg.subagentId }).catch(() => {});
       await agentLoop(base);
       const finalText = String(A.lastFinalText || "").trim();
       await bg({
