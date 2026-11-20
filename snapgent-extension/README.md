@@ -1,6 +1,6 @@
-# snapgentV3 Free - AI Roblox Studio Agent (ChatGPT, Claude, DeepSeek, Gemini, Grok, Kimi, GLM, Qwen, Arena, Meta AI, Ptero)
+# snapgentV3 Free - AI Workspace & Studio Agent (Claude, ChatGPT, Qwen, DeepSeek, Gemini, Grok, Mistral, Meta AI, Kimi, GLM, Arena, Ptero)
 
-Control Roblox Studio with AI, for free. snapgentV3 turns a normal AI chat (ChatGPT, Claude, DeepSeek, Google Gemini, Grok, Kimi, GLM, Qwen, Arena, Meta AI, or Ptero) into an agent that builds and scripts your Roblox game for you: just describe what you want, and it reads/edits scripts, runs Luau, inspects the game tree, and generates assets directly in Roblox Studio. No API key, no terminal, no coding required.
+Control VS Code, Antigravity IDE, Word, or Roblox Studio with AI, for free. snapgentV3 turns a normal AI chat (Claude, ChatGPT, Qwen, DeepSeek, Google Gemini, Grok, Mistral, Meta AI, Kimi, GLM, Arena, or Ptero) into an agent that inspects, builds, and edits your workspace directly through MCP. No API key, no terminal, no copy-paste required.
 
 It's a Chrome/Edge browser extension plus a small local bridge that connects the chat to Roblox Studio or VS Code through MCP. **DeepSeek is the recommended provider.** ChatGPT, Claude, Gemini, Grok, Kimi, GLM, Qwen, Arena, Meta AI and Ptero also work. Grok requires signing in to xAI. On ChatGPT and Claude, screenshots and image input are disabled in this integration. ChatGPT also summarises its own context in long sessions, so snapgentV3 re-states its operating instructions periodically (shown as a "Reminder" chip) to stop it forgetting it can run commands. Gemini and Kimi can be less stable: Gemini tends to stop using the Roblox tools in long sessions, and Kimi sometimes reaches for its own native tools instead of the Roblox commands. On Arena, keep the mode dropdown on **Direct** (snapgentV3 only supports Direct mode).
 
@@ -68,11 +68,21 @@ background.js         WebSocket to the local bridge (provider-agnostic)
 `manifest.json` (`content_scripts` + `host_permissions`) and to
 `PROVIDER_URLS` in `background.js`. No core change required.
 
-Smoke tests (plain Node, no dependencies - run them from this directory):
+## Multi-Tab Subagent Orchestration (`spawn_subagent`)
+
+Any active parent AI session can spawn an isolated subagent in a new browser tab across all **12 supported providers** (`claude`, `chatgpt`, `qwen`, `deepseek`, `gemini`, `grok`, `mistral`, `meta`, `kimi`, `glm`, `arena`, `ptero`) and receive a final summary back in chat:
+
+- **Aliases accepted (`SUBAGENT_PROVIDER_ALIASES`)**: `gpt` / `openai` -> `chatgpt`, `anthropic` -> `claude`, `google` -> `gemini`, `zai` / `z.ai` / `chatglm` -> `glm`, `qwen-net` -> `qwen`, `meta-ai` -> `meta`, `lechat` -> `mistral`.
+- **Anti-throttling hydration**: Briefly opens the child tab active so Chromium/Edge hydrates the SPA immediately, then restores focus to the parent tab right after handshake.
+- **Single-turn immediate bootstrap**: Sends the system instructions and delegated task in one initial turn to halve startup latency.
+- **Planned next**: Parallel batch execution (`spawn_subagents` via `Promise.all` + `focusQueue`) and unit test coverage in `test-background.js`.
+
+## Smoke & Unit Tests (plain Node, no dependencies - run from this directory):
 
 - `node test-parser.js` - the command parser (`core/parser.js`).
-- `node test-chatgpt.js` - ChatGPT reply reading (`providers/chatgpt.js`),
-  driven against a stub DOM: CodeMirror line joining, the `data-zs-cm`
-  MAIN-world tap that long code blocks depend on, and subtree exclusion.
+- `node test-guard.js` - shared retry, heartbeat, and scroll policy (`core/guard.js`).
+- `node test-background.js` - service worker WebSocket, heartbeat, and request policy (`background.js`).
+- `node test-chatgpt.js` - ChatGPT reply reading (`providers/chatgpt.js`), driven against a stub DOM (CodeMirror line joining, `data-zs-cm` MAIN-world tap, and subtree exclusion).
+- `node test-meta.js` - Meta AI reply reading (`providers/meta.js`) against a stub DOM.
 
-Both print `PASS`/`FAIL` per case and exit non-zero on failure.
+All suites print `PASS`/`FAIL` per case and exit non-zero on failure.

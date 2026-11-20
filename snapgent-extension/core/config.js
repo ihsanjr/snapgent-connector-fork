@@ -363,6 +363,8 @@ IMPORTANT: Your very first action is to write \`list_commands\` with no params (
   function toolsReminder(tools, targetName = "VS Code", serverId = "vscode") {
     const toolsString =
       `  list_commands(server: "${serverId}") - list available ${targetName} commands with full parameter details\n` +
+      `  spawn_subagent(task, provider?, auto_close?) - delegate an isolated subtask to a new AI browser tab (providers: claude, chatgpt, qwen, deepseek, gemini, grok, mistral, meta, kimi, glm, arena, ptero) and get its final summary\n` +
+      `  spawn_subagents(tasks, provider?, auto_close?) - run multiple subtasks in parallel across browser tabs (up to 6) and return all summaries\n` +
       compactTools(tools);
     return (
       "\n\n────────────────────────────────\n" +

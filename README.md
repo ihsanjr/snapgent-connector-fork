@@ -279,7 +279,27 @@ The AI sends commands, snapgentV3 runs them in the selected target (VS Code by d
 
 ---
 
-## `06` &nbsp; Architecture
+## `06` &nbsp; Architecture & Multi-Tab Subagent
+
+### Multi-Tab Subagent (`spawn_subagent`)
+The active AI session can delegate isolated subtasks to separate browser tabs across all **12 supported AI providers** and receive a consolidated summary back in the parent chat:
+
+```json
+{"command":"spawn_subagent","params":{"provider":"claude","task":"Inspect snapgent-extension/core and summarize the architecture.","auto_close":true}}
+```
+
+- **Supported `provider` values & aliases:** `claude` (`anthropic`), `chatgpt` (`gpt`, `openai`), `qwen` (`qwen-net`), `deepseek`, `gemini` (`google`), `grok`, `mistral` (`lechat`), `meta` (`meta-ai`), `kimi`, `glm` (`zai`, `z.ai`, `chatglm`), `arena`, and `ptero`.
+- **Anti-Throttling Hydration:** Opens the child tab active briefly to trigger SPA hydration without Chromium/Edge background throttling, then restores focus to the parent tab immediately after handshake.
+- **Single-Turn Immediate Bootstrap:** Combines the system prompt and delegated task in one initial turn to halve startup latency.
+
+### Roadmap & Next Steps
+- [x] **Multi-Tab Subagent Core (`spawn_subagent`)**: Tab lifecycle orchestration in `background.js`, subagent runner in `core/main.js`, and 12-provider routing + alias validation.
+- [x] **Anti-Throttling & Single-Turn Bootstrap**: Brief foreground activation with parent focus restoration and stage-aware timeout diagnostics.
+- [ ] **Parallel Subagent Batching (`spawn_subagents`)**: Execute multiple read-only subagent tasks concurrently via `Promise.all` with a serialized tab-focus queue (`focusQueue`) in `background.js`.
+- [ ] **Subagent Unit & Integration Tests**: Add automated test coverage in `snapgent-extension/test-background.js` for provider resolution, alias mapping, timeout stages, and tab cleanup.
+- [ ] **Snapgent App Sync**: Port Multi-Tab Subagent orchestration into `snapgent-app/extension`.
+
+### Extension Layout
 
 The extension is split into a **provider-agnostic core** and **per-site providers**. The core talks to each AI site through the `ZSProvider` interface.
 

@@ -28,6 +28,46 @@ const URL = `ws://127.0.0.1:${PORT}`;
 // manifest.json content_scripts + host_permissions) when integrating another AI.
 const PROVIDER_URLS = ["https://chat.deepseek.com/*", "https://chatgpt.com/*", "https://chat.openai.com/*", "https://claude.ai/*", "https://gemini.google.com/*", "https://www.kimi.ai/*", "https://kimi.ai/*", "https://chat.z.ai/*", "https://chat.qwen.ai/*", "https://arena.ai/*", "https://www.meta.ai/*", "https://meta.ai/*", "https://ptero.pro/*", "https://grok.com/*", "https://chat.mistral.ai/*"];
 
+const SUBAGENT_PROVIDER_URLS = {
+  chatgpt: "https://chatgpt.com/",
+  claude: "https://claude.ai/new",
+  gemini: "https://gemini.google.com/app",
+  deepseek: "https://chat.deepseek.com/",
+  kimi: "https://www.kimi.ai/",
+  glm: "https://chat.z.ai/",
+  qwen: "https://chat.qwen.ai/",
+  arena: "https://arena.ai/text/direct",
+  meta: "https://www.meta.ai/",
+  ptero: "https://ptero.pro/",
+  grok: "https://grok.com/",
+  mistral: "https://chat.mistral.ai/code",
+};
+
+const SUBAGENT_PROVIDER_ALIASES = {
+  gpt: "chatgpt",
+  openai: "chatgpt",
+  "chatgpt-cm": "chatgpt",
+  anthropic: "claude",
+  google: "gemini",
+  zai: "glm",
+  "z.ai": "glm",
+  chatglm: "glm",
+  "qwen-net": "qwen",
+  "meta-ai": "meta",
+  lechat: "mistral",
+};
+
+const MAX_PARALLEL_SUBAGENTS = 6;
+
+// Active multi-tab subagent registry: subagentId -> { parentTabId, childTabId, provider, autoClose, stage, resolve, timer }
+const subagentSessions = new Map();
+let nextSubagentSeq = 1;
+// Serialized foreground-hydration queue so parallel subagents open and handshake
+// one tab at a time without focus races, then restore focus to parentTabId once
+// the queue drains.
+let subagentFocusChain = Promise.resolve();
+let subagentFocusPending = 0;
+
 const RECONNECT_MIN = 1000;
 const RECONNECT_MAX = 5000;
 const HEARTBEAT_MS = 10000;
@@ -398,9 +438,245 @@ function broadcastStatus() {
 }
 
 // ── messages from content.js / popup.js ─────────────────────────────────
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+// -- Multi-tab subagent orchestration --
+function settleSubagent(subagentId, payload) {
+  const session = subagentSessions.get(subagentId);
+  if (!session) return false;
+  subagentSessions.delete(subagentId);
+  clearTimeout(session.timer);
+  if (session.autoClose && typeof session.childTabId === "number") {
+    chrome.tabs.remove(session.childTabId).catch(() => {});
+  }
+  session.resolve(payload);
+  return true;
+}
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  for (const [subagentId, session] of subagentSessions.entries()) {
+    if (session.childTabId === tabId) {
+      session.childTabId = null;
+      settleSubagent(subagentId, {
+        ok: false,
+        error: "Subagent tab was closed before finishing.",
+      });
+    }
+  }
+});
+
+function waitTabComplete(tabId, timeoutMs = 25000) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      resolve(ok);
+    };
+    const onUpdated = (updatedId, info) => {
+      if (updatedId === tabId && info.status === "complete") finish(true);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    chrome.tabs.get(tabId, (tab) => {
+      if (chrome.runtime.lastError) finish(false);
+      else if (tab && tab.status === "complete") finish(true);
+    });
+  });
+}
+
+async function deliverSubagentBoot(tabId, bootMsg, timeoutMs = 20000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeoutMs) {
+    const ack = await new Promise((resolve) => {
+      chrome.tabs.sendMessage(tabId, bootMsg, (resp) => {
+        if (chrome.runtime.lastError) resolve(null);
+        else resolve(resp || null);
+      });
+    });
+    if (ack && ack.ok) return { ok: true };
+    if (ack && ack.error) return { ok: false, error: ack.error };
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  return { ok: false, error: "Subagent content script did not respond in time." };
+}
+
+function resolveSubagentProvider(rawInput, fallback = "gemini") {
+  const raw = typeof rawInput === "string" ? rawInput.trim().toLowerCase() : "";
+  const normalized = SUBAGENT_PROVIDER_ALIASES[raw] || raw || fallback;
+  const url = SUBAGENT_PROVIDER_URLS[normalized];
+  if (!url) {
+    const supported = Object.keys(SUBAGENT_PROVIDER_URLS).join(", ");
+    return { ok: false, rawProvider: raw, error: `Unknown subagent provider "${raw}". Supported providers: ${supported}.` };
+  }
+  return { ok: true, provider: normalized, url };
+}
+
+function enqueueSubagentFocus(parentTabId, fn) {
+  subagentFocusPending++;
+  const run = subagentFocusChain.then(async () => {
+    try {
+      return await fn();
+    } finally {
+      subagentFocusPending = Math.max(0, subagentFocusPending - 1);
+      if (subagentFocusPending === 0 && typeof parentTabId === "number") {
+        try { await chrome.tabs.update(parentTabId, { active: true }); } catch (_) {}
+      }
+    }
+  });
+  subagentFocusChain = run.catch(() => {});
+  return run;
+}
+
+async function spawnSubagentTab(msg, sender) {
+  const task = typeof msg.task === "string" ? msg.task.trim() : "";
+  if (!task) return { ok: false, error: "Subagent 'task' parameter is required." };
+  const prov = resolveSubagentProvider(msg.provider, "gemini");
+  if (!prov.ok) return { ok: false, error: prov.error };
+  const { provider: resolvedProvider, url } = prov;
+  const autoClose = msg.auto_close !== false;
+  const timeoutMs = Math.max(30000, Math.min(Number(msg.timeout) || 240000, 600000));
+  const parentTabId = sender && sender.tab ? sender.tab.id : null;
+  const subagentId = `sa_${Date.now()}_${nextSubagentSeq++}`;
+
+  return new Promise(async (resolve) => {
+    let stage = "creating_tab";
+    const timer = setTimeout(() => {
+      settleSubagent(subagentId, {
+        ok: false,
+        error: `Subagent timed out after ${Math.round(timeoutMs / 1000)}s (last stage: ${stage}).`,
+      });
+    }, timeoutMs);
+
+    subagentSessions.set(subagentId, {
+      parentTabId,
+      childTabId: null,
+      provider: resolvedProvider,
+      autoClose,
+      stage,
+      resolve,
+      timer,
+    });
+
+    const hydrated = await enqueueSubagentFocus(parentTabId, async () => {
+      if (!subagentSessions.has(subagentId)) return { ok: false, error: "Subagent cancelled before tab creation." };
+      let createdTab;
+      try {
+        // Open active briefly so Chromium/Edge hydrates the SPA without background throttling,
+        // then serialize focus across concurrent spawns before restoring parentTabId.
+        createdTab = await chrome.tabs.create({ url, active: true });
+      } catch (e) {
+        return { ok: false, error: `Failed to open subagent tab: ${String(e && e.message || e)}` };
+      }
+      const childTabId = createdTab && createdTab.id;
+      if (typeof childTabId !== "number") {
+        return { ok: false, error: "Browser did not return a valid tab ID for subagent." };
+      }
+      const sess = subagentSessions.get(subagentId);
+      if (sess) sess.childTabId = childTabId;
+
+      stage = "loading_tab";
+      if (sess) sess.stage = stage;
+      const loaded = await waitTabComplete(childTabId, 30000);
+      if (!subagentSessions.has(subagentId)) return { ok: false, error: "Subagent closed during load." };
+      if (!loaded) {
+        return { ok: false, error: "Subagent tab failed to finish loading." };
+      }
+
+      stage = "handshaking_content_script";
+      if (sess) sess.stage = stage;
+      return await deliverSubagentBoot(childTabId, {
+        type: "zs-subagent-start",
+        subagentId,
+        task,
+        targetServer: msg.target_server || "vscode",
+        allowTools: msg.allow_tools !== false,
+      }, 20000);
+    });
+
+    if (!subagentSessions.has(subagentId)) return;
+    if (!hydrated || !hydrated.ok) {
+      settleSubagent(subagentId, {
+        ok: false,
+        error: (hydrated && hydrated.error) || "Failed to initialize subagent.",
+      });
+      return;
+    }
+    stage = "running_task";
+    const sess = subagentSessions.get(subagentId);
+    if (sess) sess.stage = stage;
+    log(`subagent ${subagentId} started on ${resolvedProvider} (tab ${sess ? sess.childTabId : "?"})`);
+  });
+}
+
+async function spawnSubagentBatch(msg, sender) {
+  const rawTasks = Array.isArray(msg.tasks) ? msg.tasks : null;
+  if (!rawTasks || rawTasks.length === 0) {
+    return { ok: false, error: "Batch 'tasks' parameter must be a non-empty array." };
+  }
+  if (rawTasks.length > MAX_PARALLEL_SUBAGENTS) {
+    return { ok: false, error: `Too many parallel subagents (${rawTasks.length}); maximum is ${MAX_PARALLEL_SUBAGENTS}.` };
+  }
+  const defaultProvider = typeof msg.provider === "string" && msg.provider.trim() ? msg.provider.trim() : "gemini";
+  const defaultAutoClose = msg.auto_close !== false;
+  const defaultTimeout = typeof msg.timeout === "number" ? msg.timeout : 240000;
+
+  const normalized = [];
+  for (let i = 0; i < rawTasks.length; i++) {
+    const item = rawTasks[i];
+    const isObj = item && typeof item === "object";
+    const task = isObj ? String(item.task || "").trim() : String(item || "").trim();
+    if (!task) {
+      return { ok: false, error: `Batch task at index ${i} must be a non-empty string.` };
+    }
+    const prov = resolveSubagentProvider(isObj && item.provider ? item.provider : defaultProvider, "gemini");
+    if (!prov.ok) {
+      return { ok: false, error: `Batch task at index ${i}: ${prov.error}` };
+    }
+    normalized.push({
+      task,
+      provider: prov.provider,
+      auto_close: isObj && typeof item.auto_close === "boolean" ? item.auto_close : defaultAutoClose,
+      timeout: isObj && typeof item.timeout === "number" ? item.timeout : defaultTimeout,
+      target_server: (isObj && item.target_server) || msg.target_server || "vscode",
+      allow_tools: isObj && typeof item.allow_tools === "boolean" ? item.allow_tools : (msg.allow_tools !== false),
+    });
+  }
+
+  const results = await Promise.all(
+    normalized.map((entry, index) =>
+      spawnSubagentTab(entry, sender).then((r) => ({ index, provider: entry.provider, ...r }))
+    )
+  );
+  return {
+    ok: results.every((r) => r.ok),
+    results,
+  };
+}
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     switch (msg.type) {
+      case "spawn_subagent": {
+        const r = await spawnSubagentTab(msg, sender);
+        sendResponse(r);
+        break;
+      }
+      case "spawn_subagents": {
+        const r = await spawnSubagentBatch(msg, sender);
+        sendResponse(r);
+        break;
+      }
+      case "zs-subagent-done": {
+        const handled = settleSubagent(msg.subagentId, {
+          ok: !!msg.ok,
+          result: msg.result || "",
+          error: msg.error || "",
+          provider: msg.provider || "",
+        });
+        sendResponse({ ok: handled });
+        break;
+      }
       case "status":
         if (!connected) connect(); // self-heal after a worker wake-up
         sendResponse(statusObj());

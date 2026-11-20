@@ -2,6 +2,17 @@
 
 All notable changes to snapgentV3 Free are documented here.
 
+## [Unreleased]
+
+### Added
+- **Extension: Multi-Tab Subagent Orchestration (`spawn_subagent`).** Any active AI chat session can spawn an isolated subagent in a new browser tab across all **12 supported providers** (`claude`, `chatgpt`, `qwen`, `deepseek`, `gemini`, `grok`, `mistral`, `meta`, `kimi`, `glm`, `arena`, `ptero`), execute multi-step MCP commands independently, and return a final summary to the parent chat (`background.js`, `core/main.js`, `core/config.js`).
+- **Extension: Provider Alias Mapping & Validation (`SUBAGENT_PROVIDER_ALIASES`).** Added alias normalization (`gpt`/`openai` -> `chatgpt`, `anthropic` -> `claude`, `google` -> `gemini`, `zai`/`z.ai`/`chatglm` -> `glm`, `qwen-net` -> `qwen`, `meta-ai` -> `meta`, `lechat` -> `mistral`) and explicit error reporting listing supported providers when an unknown provider is requested.
+- **Extension: Parallel Subagent Batches (`spawn_subagents`).** Runs up to 6 subagent tasks concurrently across browser tabs (`Promise.all`). A serialized focus queue hydrates child tabs one at a time and returns focus to the parent tab once the queue drains (`background.js`, `core/main.js`, `core/config.js`).
+- **Extension: New `tabs` permission.** `manifest.json` now requests `tabs` so the extension can open, focus, and close subagent tabs. Browsers may show a permission prompt when the extension updates; `host_permissions` are unchanged.
+
+### Fixed
+- **Extension: Subagent Anti-Throttling & Single-Turn Bootstrap.** Child tabs open active briefly so Chromium/Edge hydrates heavy SPAs without background timer throttling, restore focus to the parent tab immediately after handshake, and combine system instructions with the initial task in a single turn to halve startup latency.
+
 ## [V3.9.11] - 2026-11-17
 
 ### Added

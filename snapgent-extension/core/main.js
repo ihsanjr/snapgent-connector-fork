@@ -1100,7 +1100,7 @@
     // tool call that fired into Studio off-screen (observed live: GLM minimized
     // still ran execute_luau). Parking here (no time cap) means the call runs the
     // moment the tab is foreground again, instead of being lost or run blind.
-    if (document.hidden && !A.stop) {
+    if (document.hidden && !A.stop && !A.subagent) {
       diag("tool.waitVisible", { name });
       // Only reachable via a user Stop while parked; agentLoop's post-runTool
       // A.stop check breaks the loop and discards this, so it just needs to be
@@ -1115,6 +1115,55 @@
         return `ERROR: '${bareName}' is unavailable here - this assistant cannot see images. Do NOT call it again. Inspect the place programmatically instead (e.g. inspect_instance, get_studio_state, search_game_tree, script_read).`;
       }
       return `ERROR: the '${bareName}' command timed out and is unavailable in this environment. Do NOT call it again - complete the task yourself using the other commands (execute_luau, multi_edit, etc.).`;
+    }
+    // Virtual command: delegate an isolated subtask to a new background AI tab.
+    if (bareName === "spawn_subagent") {
+      const task = typeof args.task === "string" ? args.task.trim() : "";
+      if (!task) return "ERROR: 'spawn_subagent' requires a non-empty string 'task' parameter.";
+      const provider = typeof args.provider === "string" && args.provider.trim()
+        ? args.provider.trim().toLowerCase()
+        : P.id;
+      const res = await bg({
+        type: "spawn_subagent",
+        task,
+        provider,
+        target_server: selectedTargetId,
+        auto_close: args.auto_close !== false,
+        timeout: typeof args.timeout === "number" ? args.timeout : 240000,
+      });
+      if (!res || !res.ok) {
+        return `ERROR: Subagent failed - ${(res && res.error) || "unknown error"}`;
+      }
+      const outText = String(res.result || "").trim() || "(Subagent completed with no text output.)";
+      return `Output of 'spawn_subagent' (${res.provider || provider}):\n${outText}`;
+    }
+    // Virtual command: delegate multiple isolated subtasks in parallel across browser tabs.
+    if (bareName === "spawn_subagents") {
+      const tasks = Array.isArray(args.tasks) ? args.tasks : null;
+      if (!tasks || tasks.length === 0) {
+        return "ERROR: 'spawn_subagents' requires a non-empty 'tasks' array.";
+      }
+      const defaultProvider = typeof args.provider === "string" && args.provider.trim()
+        ? args.provider.trim().toLowerCase()
+        : P.id;
+      const res = await bg({
+        type: "spawn_subagents",
+        tasks,
+        provider: defaultProvider,
+        target_server: selectedTargetId,
+        auto_close: args.auto_close !== false,
+        timeout: typeof args.timeout === "number" ? args.timeout : 240000,
+      });
+      if (!res || !Array.isArray(res.results)) {
+        return `ERROR: Parallel subagents failed - ${(res && res.error) || "unknown error"}`;
+      }
+      const sections = res.results.map((item) => {
+        const label = `#${item.index + 1} [${item.provider || defaultProvider}]`;
+        if (!item.ok) return `${label}: ERROR - ${item.error || "unknown error"}`;
+        const body = String(item.result || "").trim() || "(Subagent completed with no text output.)";
+        return `${label}:\n${body}`;
+      });
+      return `Output of 'spawn_subagents' (${res.results.length} tasks, ${res.ok ? "all succeeded" : "partial/failed"}):\n\n${sections.join("\n\n---\n\n")}`;
     }
     // Virtual command: list the MCP server(s) snapgentV3 is currently connected
     // to, with each one's REAL per-server health (from the bridge, never the
@@ -1550,7 +1599,7 @@
         //    duplicate sends - see the send-side guard in submitAndGetBase).
         // Parking here means we never START a parse/exec cycle off-screen; the
         // send step re-checks too, so a switch-away mid-generation is covered.
-        if (document.hidden && !A.stop) {
+        if (document.hidden && !A.stop && !A.subagent) {
           diag("loop.waitVisible");
           ui.inputCover(true); // keep the "Agent is working" cover up while parked
           if (!(await waitVisible()) || A.stop) break; // park (no cap) until foreground; break only on user stop
@@ -1662,6 +1711,7 @@
               diag("images.saveError", { msg: String((e && e.message) || e) });
             }
           }
+          A.lastFinalText = res.text || "";
           break; // final answer
         }
 
@@ -1692,7 +1742,7 @@
           //     the auto-resume watchdog refuses to re-fire an "executed" turn.
           // Parking first keeps all of that truthful: we only commit once we are
           // foreground and about to really dispatch.
-          if (document.hidden && !A.stop) {
+          if (document.hidden && !A.stop && !A.subagent) {
             diag("tool.parkBeforeDispatch", { name: call.tool });
             if (!(await waitVisible()) || A.stop) break;
           }
@@ -2397,7 +2447,7 @@
   // ════════════════════════════════════════════════════════════════════════
   //  SESSION BOOTSTRAP  ("Starting Up" animated chip, shown in the conversation)
   // ════════════════════════════════════════════════════════════════════════
-  async function startSession() {
+  async function startSession(opts = {}) {
     if (A.running || A.starting) return;
     // "Start session" is allowed ONLY on a blank conversation. Opening an
     // EXISTING conversation must never trigger the bootstrap.
@@ -2535,6 +2585,10 @@
       rememberSession(P.conversationKey()); // survives virtualization AND reloads
       ui.setStarted(true);
       ui.toast(`Agent on.`);
+      if (opts && typeof opts.initialUserTask === "string" && opts.initialUserTask.trim()) {
+        const taskBase = await submitAndGetBase(opts.initialUserTask.trim());
+        if (alive()) await agentLoop(taskBase);
+      }
     } catch (e) {
       if (alive()) ui.banner("warn", "Startup failed", String((e && e.message) || e));
     } finally {
@@ -4946,7 +5000,78 @@
   //  WIRING
   // ════════════════════════════════════════════════════════════════════════
 
-  chrome.runtime.onMessage.addListener((msg) => {
+  async function runSubagentTask(msg) {
+    if (!msg || !msg.subagentId || A.subagent) return;
+    A.subagent = {
+      subagentId: msg.subagentId,
+      targetServer: msg.targetServer || "vscode",
+    };
+    A.lastFinalText = "";
+    try {
+      if (msg.targetServer && typeof msg.targetServer === "string") {
+        selectedTargetId = msg.targetServer;
+      }
+      const t0 = Date.now();
+      while (Date.now() - t0 < 25000 && !P.chatIsEmpty()) {
+        await sleep(300);
+      }
+      if (!P.chatIsEmpty()) {
+        throw new Error("Subagent chat input was not ready within 25s.");
+      }
+      await ensureTools(true);
+      if (selectedTargetId === "vscode" || selectedTargetId === "antigravity") {
+        await loadWorkspaceSkills();
+      }
+      const modeState = P.ensureMode ? await P.ensureMode() : { ready: true };
+      if (modeState && modeState.ready === false) {
+        throw new Error(`${P.displayName} mode not ready for subagent.`);
+      }
+      A.userStopped = false;
+      A.stop = false;
+      A.toolCallsSinceReminder = 0;
+      A.bootBaselineId = P.lastAssistantId ? P.lastAssistantId() : null;
+      A.started = true;
+      ui.setStarted(true);
+      const combinedPrompt =
+        systemPrompt() +
+        "\n\n----------------------------------------\n" +
+        "[SUBAGENT MODE - IMMEDIATE EXECUTION]\n" +
+        "You are running as a background subagent delegated by a parent AI session. " +
+        "Do NOT run list_commands or reply with 'I'm ready'. Execute the delegated task below " +
+        "immediately using available commands if needed, and end with a clear, self-contained " +
+        "summary of your findings or work.\n\n" +
+        `Task:\n${msg.task}`;
+      const base = await submitAndGetBase(combinedPrompt);
+      await agentLoop(base);
+      const finalText = String(A.lastFinalText || "").trim();
+      await bg({
+        type: "zs-subagent-done",
+        subagentId: msg.subagentId,
+        ok: Boolean(finalText),
+        result: finalText,
+        error: finalText ? "" : "Subagent loop ended without producing a final text summary.",
+        provider: P.id,
+      });
+    } catch (e) {
+      await bg({
+        type: "zs-subagent-done",
+        subagentId: msg.subagentId,
+        ok: false,
+        result: "",
+        error: String((e && e.message) || e),
+        provider: P.id,
+      });
+    } finally {
+      A.subagent = null;
+    }
+  }
+
+  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if (msg && msg.type === "zs-subagent-start") {
+      sendResponse({ ok: true, provider: P.id });
+      runSubagentTask(msg);
+      return true;
+    }
     if (msg && msg.type === "zs-status") {
       ui.setStatus({ connected: msg.connected, mcpAlive: msg.mcpAlive, studio: msg.studio, studioApp: msg.studioApp, studioProc: msg.studioProc, tools: msg.tools, servers: msg.servers });
     }

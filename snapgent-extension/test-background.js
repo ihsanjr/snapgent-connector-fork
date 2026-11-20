@@ -29,7 +29,16 @@ global.chrome = {
     onInstalled: noEvent,
     sendMessage: () => Promise.resolve(),
   },
-  tabs: { query: (_f, cb) => cb && cb([]), sendMessage: () => Promise.resolve() },
+  tabs: {
+    query: (_f, cb) => cb && cb([]),
+    sendMessage: () => Promise.resolve(),
+    get: (_id, cb) => cb && cb(null),
+    create: () => Promise.resolve({ id: 999 }),
+    update: () => Promise.resolve({}),
+    remove: () => Promise.resolve(),
+    onRemoved: noEvent,
+    onUpdated: noEvent,
+  },
   storage: { local: { get: (_k, cb) => cb && cb({}), set: () => {} } },
   alarms: { create: () => {}, onAlarm: noEvent, clear: () => {} },
 };
@@ -62,10 +71,10 @@ const internals = new Function(
   "chrome",
   "WebSocket",
   "ZSGuard",
-  src + "\n; return { send, failAllPending, pending, setConnected: (v) => { connected = v; }, setWs: (w) => { ws = w; } };"
+  src + "\n; return { send, failAllPending, pending, SUBAGENT_PROVIDER_URLS, SUBAGENT_PROVIDER_ALIASES, resolveSubagentProvider, spawnSubagentTab, spawnSubagentBatch, settleSubagent, subagentSessions, setConnected: (v) => { connected = v; }, setWs: (w) => { ws = w; } };"
 )(global.chrome, global.WebSocket, ZSGuard);
 
-const { send, failAllPending, pending } = internals;
+const { send, failAllPending, pending, SUBAGENT_PROVIDER_URLS, SUBAGENT_PROVIDER_ALIASES, resolveSubagentProvider, spawnSubagentTab, spawnSubagentBatch, settleSubagent, subagentSessions } = internals;
 
 (async () => {
   // ── 1. Nothing connected: the request never left ─────────────────────────
@@ -128,6 +137,41 @@ const { send, failAllPending, pending } = internals;
     ok("ping is a known message type", !(reply && reply.error === "unknown message"));
     ok("ping answers a structured failure when the bridge is down",
       reply && (reply.ok === true || typeof reply.kind === "string"));
+  }
+
+  // -- 5. Subagent provider routing, aliases, batch limits, and cleanup --
+  {
+    ok("all 12 canonical subagent providers have URLs", Object.keys(SUBAGENT_PROVIDER_URLS).length === 12);
+    const gpt = resolveSubagentProvider("gpt");
+    const lechat = resolveSubagentProvider("lechat");
+    const zai = resolveSubagentProvider("z.ai");
+    ok("aliases normalize to canonical providers", gpt.ok && gpt.provider === "chatgpt" && lechat.provider === "mistral" && zai.provider === "glm");
+
+    const unknown = resolveSubagentProvider("nonexistent-ai");
+    ok("unknown provider returns explicit error with supported list", unknown.ok === false && /Supported providers:/i.test(unknown.error) && /claude/i.test(unknown.error));
+
+    const emptyTask = await spawnSubagentTab({ task: "   " }, {});
+    ok("spawnSubagentTab rejects blank task", emptyTask && emptyTask.ok === false);
+
+    const tooMany = await spawnSubagentBatch({ tasks: ["a", "b", "c", "d", "e", "f", "g"] }, {});
+    ok("spawnSubagentBatch enforces max parallel cap", tooMany && tooMany.ok === false && /maximum is 6/i.test(tooMany.error));
+
+    let closedTabId = null;
+    chrome.tabs.remove = (tabId) => { closedTabId = tabId; return Promise.resolve(); };
+    let settledPayload = null;
+    const fakeTimer = setTimeout(() => {}, 60000);
+    subagentSessions.set("sa_test_1", {
+      parentTabId: 10,
+      childTabId: 42,
+      provider: "claude",
+      autoClose: true,
+      stage: "running_task",
+      resolve: (v) => { settledPayload = v; },
+      timer: fakeTimer,
+    });
+    const handled = settleSubagent("sa_test_1", { ok: true, result: "done" });
+    clearTimeout(fakeTimer);
+    ok("settleSubagent cleans up session, closes tab when autoClose is true, and resolves", handled === true && !subagentSessions.has("sa_test_1") && closedTabId === 42 && settledPayload && settledPayload.ok === true);
   }
 })().catch((e) => {
   console.error(e);
