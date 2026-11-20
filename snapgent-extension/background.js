@@ -43,6 +43,12 @@ const SUBAGENT_PROVIDER_URLS = {
   mistral: "https://chat.mistral.ai/code",
 };
 
+const SUBAGENT_TEMP_URLS = {
+  chatgpt: "https://chatgpt.com/?temporary-chat=true",
+  claude: "https://claude.ai/new?incognito",
+  grok: "https://grok.com/?private=true",
+};
+
 const SUBAGENT_PROVIDER_ALIASES = {
   gpt: "chatgpt",
   openai: "chatgpt",
@@ -505,14 +511,15 @@ async function deliverSubagentBoot(tabId, bootMsg, timeoutMs = 20000) {
   return { ok: false, error: "Subagent content script did not respond in time." };
 }
 
-function resolveSubagentProvider(rawInput, fallback = "gemini") {
+function resolveSubagentProvider(rawInput, fallback = "gemini", temporary = false) {
   const raw = typeof rawInput === "string" ? rawInput.trim().toLowerCase() : "";
   const normalized = SUBAGENT_PROVIDER_ALIASES[raw] || raw || fallback;
-  const url = SUBAGENT_PROVIDER_URLS[normalized];
-  if (!url) {
+  const baseUrl = SUBAGENT_PROVIDER_URLS[normalized];
+  if (!baseUrl) {
     const supported = Object.keys(SUBAGENT_PROVIDER_URLS).join(", ");
     return { ok: false, rawProvider: raw, error: `Unknown subagent provider "${raw}". Supported providers: ${supported}.` };
   }
+  const url = (temporary && SUBAGENT_TEMP_URLS[normalized]) || baseUrl;
   return { ok: true, provider: normalized, url };
 }
 
@@ -535,7 +542,8 @@ function enqueueSubagentFocus(parentTabId, fn) {
 async function spawnSubagentTab(msg, sender) {
   const task = typeof msg.task === "string" ? msg.task.trim() : "";
   if (!task) return { ok: false, error: "Subagent 'task' parameter is required." };
-  const prov = resolveSubagentProvider(msg.provider, "gemini");
+  const temporary = Boolean(msg.temporary || msg.auto_delete);
+  const prov = resolveSubagentProvider(msg.provider, "gemini", temporary);
   if (!prov.ok) return { ok: false, error: prov.error };
   const { provider: resolvedProvider, url } = prov;
   const autoClose = msg.auto_close !== false;
@@ -595,6 +603,7 @@ async function spawnSubagentTab(msg, sender) {
         task,
         targetServer: msg.target_server || "vscode",
         allowTools: msg.allow_tools !== false,
+        temporary,
       }, 20000);
       if (!boot || !boot.ok) return boot;
 
@@ -648,6 +657,7 @@ async function spawnSubagentBatch(msg, sender) {
   }
   const defaultProvider = typeof msg.provider === "string" && msg.provider.trim() ? msg.provider.trim() : "gemini";
   const defaultAutoClose = msg.auto_close !== false;
+  const defaultTemporary = Boolean(msg.temporary || msg.auto_delete);
   const defaultTimeout = typeof msg.timeout === "number" ? msg.timeout : 240000;
 
   const normalized = [];
@@ -662,10 +672,14 @@ async function spawnSubagentBatch(msg, sender) {
     if (!prov.ok) {
       return { ok: false, error: `Batch task at index ${i}: ${prov.error}` };
     }
+    const itemTemp = isObj && (typeof item.temporary === "boolean" || typeof item.auto_delete === "boolean")
+      ? Boolean(item.temporary || item.auto_delete)
+      : defaultTemporary;
     normalized.push({
       task,
       provider: prov.provider,
       auto_close: isObj && typeof item.auto_close === "boolean" ? item.auto_close : defaultAutoClose,
+      temporary: itemTemp,
       timeout: isObj && typeof item.timeout === "number" ? item.timeout : defaultTimeout,
       target_server: (isObj && item.target_server) || msg.target_server || "vscode",
       allow_tools: isObj && typeof item.allow_tools === "boolean" ? item.allow_tools : (msg.allow_tools !== false),

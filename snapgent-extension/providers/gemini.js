@@ -474,6 +474,40 @@ const ZSProvider = (() => {
     return { ready: !!getEditor() };
   }
 
+  // Best-effort toggle for Gemini's Temporary Chat button before the first turn.
+  async function enableTemporaryChat() {
+    const isTempBtn = (el) => {
+      if (!el || el.offsetParent === null) return false;
+      const label = (
+        (el.getAttribute("aria-label") || "") + " " +
+        (el.getAttribute("mattooltip") || "") + " " +
+        (el.textContent || "")
+      ).toLowerCase();
+      if (/temporary\s*chat|chat\s*sementara|incognito|obrolan\s*sementara/.test(label)) return true;
+      const ic = iconName(el);
+      return ic === "chat_dashed" || ic === "visibility_off" || ic === "incognito";
+    };
+    const findBtn = () => [...document.querySelectorAll("button, [role='button']")].find(isTempBtn) || null;
+    let btn = findBtn();
+    if (!btn) {
+      await waitFor(() => !!(btn = findBtn()), 3000);
+    }
+    if (!btn) {
+      diag("temp_chat.notFound", { provider: "gemini" });
+      return false;
+    }
+    try {
+      btn.click();
+      diag("temp_chat.clicked", { provider: "gemini" });
+      await sleep(400);
+      await waitFor(() => !!getEditor(), 3000);
+      return true;
+    } catch (e) {
+      diag("temp_chat.err", { provider: "gemini", error: String((e && e.message) || e) });
+      return false;
+    }
+  }
+
   // ── Error / limit detection (site chrome only) ────────────────────────────
   function scanError() {
     try {
@@ -761,7 +795,7 @@ const ZSProvider = (() => {
     getEditor, editorText, chatIsEmpty, isFreshChat, composerFrame, barMount,
     setInputLock, typeAndSend, stopGeneration,
     isGenerating, isBusyNow, isHardGenerating,
-    enforceComposer, ensureComposerReady,
+    enforceComposer, ensureComposerReady, enableTemporaryChat,
     turnHalted, findContinueBtn, clickContinueBtn,
     scanError, isTooLongMsg, isBusyMsg,
     // actions

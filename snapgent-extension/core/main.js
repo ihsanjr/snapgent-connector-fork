@@ -1129,6 +1129,7 @@
         provider,
         target_server: selectedTargetId,
         auto_close: args.auto_close !== false,
+        temporary: Boolean(args.temporary || args.auto_delete),
         timeout: typeof args.timeout === "number" ? args.timeout : 240000,
       });
       if (!res || !res.ok) {
@@ -1152,6 +1153,7 @@
         provider: defaultProvider,
         target_server: selectedTargetId,
         auto_close: args.auto_close !== false,
+        temporary: Boolean(args.temporary || args.auto_delete),
         timeout: typeof args.timeout === "number" ? args.timeout : 240000,
       });
       if (!res || !Array.isArray(res.results)) {
@@ -5025,6 +5027,9 @@
       const modeState = P.ensureMode ? await P.ensureMode() : { ready: true };
       if (modeState && modeState.ready === false) {
         throw new Error(`${P.displayName} mode not ready for subagent.`);
+      }
+      if (msg.temporary && typeof P.enableTemporaryChat === "function") {
+        try { await P.enableTemporaryChat(); } catch (_) {}
       }
       A.userStopped = false;
       A.stop = false;
