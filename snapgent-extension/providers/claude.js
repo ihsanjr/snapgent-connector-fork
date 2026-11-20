@@ -48,7 +48,7 @@ const ZSProvider = (() => {
   const visible = (el) => !!el && el.isConnected && el.getClientRects().length > 0;
   const without = (root, excludeSel) => {
     if (!root) return "";
-    const skip = [".zs-chip", S.thinking, excludeSel].filter(Boolean).join(",");
+    const skip = [".zs-chip", ".sr-only", "[aria-hidden=true]", "[data-cds=RelativeTime]", S.thinking, excludeSel].filter(Boolean).join(",");
     let text = "";
     const visit = (node) => {
       if (node.nodeType === Node.TEXT_NODE) {

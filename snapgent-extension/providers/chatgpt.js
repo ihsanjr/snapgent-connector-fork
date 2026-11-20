@@ -71,7 +71,7 @@ const ZSProvider = (() => {
     // is exactly why Start reported
     // "reply was never read (0 chars) - message DOM not matched".
     // The structural probes are APPENDED, so older layouts keep working.
-    msg: '[data-message-author-role],[class*="DilResponseRoot"],[data-turn-key]',
+    msg: '[data-message-role],[data-message-author-role],[class*="DilResponseRoot"],[data-turn-key]',
     userRole: "user",
     assistantRole: "assistant",
     reply: ".markdown",
@@ -131,7 +131,7 @@ const ZSProvider = (() => {
   //   </div>
   const isTurnKeyItem = (item) => !!(item && item.matches && item.matches('[data-turn-key]'));
   const role = (item) => {
-    const attr = item && item.getAttribute ? item.getAttribute("data-message-author-role") : null;
+    const attr = item && item.getAttribute ? (item.getAttribute("data-message-author-role") || item.getAttribute("data-message-role")) : null;
     if (attr) return attr;
     // New markup: the container itself carries the turn, the role lives inside it.
     if (isTurnKeyItem(item)) return "turn";
@@ -183,7 +183,7 @@ const ZSProvider = (() => {
     if (pres.length) return pres;
     // Shape B: plain text. Take the DEEPEST wrapper that still carries the
     // envelope, i.e. the one whose text starts at the payload.
-    return [...item.querySelectorAll("div")]
+    const shapeB = [...item.querySelectorAll("div")]
       .filter((d) => {
         if (inUser(d)) return false;
         const t = d.innerText || "";
@@ -191,9 +191,13 @@ const ZSProvider = (() => {
         return /"(?:command|params|tool)"\s*:/.test(t);
       })
       .slice(-1);
+    // Shape C: plain text with no pre and no JSON. Fall back to the whole turn.
+    return shapeB.length ? shapeB : [item];
   };
   const replyNodes = (item) => {
     if (isDilReply(item)) return [item];
+    // 2026-11-20 layout: the assistant message is its own [data-message-role] element.
+    if (role(item) === S.assistantRole) return [item];
     const native = [...item.querySelectorAll(S.reply)];
     if (native.length) return native;
     return turnAssistantBlocks(item);
@@ -697,7 +701,7 @@ const ZSProvider = (() => {
     const mds = replyNodes(item);
     return {
       present: true,
-      reply: mds.map((m) => textWithout(m, ".zs-chip")).join("\n").trim(),
+      reply: mds.map((m) => textWithout(m, ".zs-chip, [class*='group/user-message']")).join("\n").replace(SR_REPLY, "").trim(),
       thinking: "", // reasoning is gated by the stop button, not parsed as text
       item,
     };
