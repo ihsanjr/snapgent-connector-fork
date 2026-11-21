@@ -13,7 +13,9 @@ function render(s) {
   const state = document.getElementById("state");
   const tools = document.getElementById("tools");
   const servers = document.getElementById("servers");
+  const gateway = document.getElementById("gateway");
   const list = s.servers || [];
+  const aiList = Array.isArray(s.aiProviders) ? s.aiProviders : [];
   const up = list.filter((x) => x.alive).length;
   const mcpOk = s.connected && (s.mcpAlive || up > 0 || s.tools > 0);
   const studioOff = mcpOk && s.studio === false; // MCP up but no Studio attached
@@ -28,12 +30,25 @@ function render(s) {
   const ver = document.getElementById("ver");
   const extVer = chrome.runtime.getManifest().version;
   ver.textContent = !s.connected ? `ext v${extVer}`
-    : s.bridgeVersion ? `ext v${extVer} · bridge v${s.bridgeVersion}`
-    : `ext v${extVer} · bridge old`;
+    : s.bridgeVersion ? `ext v${extVer} \u00b7 bridge v${s.bridgeVersion}`
+    : `ext v${extVer} \u00b7 bridge old`;
   tools.textContent = s.connected ? `${s.tools || 0} tools` : "Run start.bat";
   servers.textContent = s.connected
-    ? list.map((x) => `${x.alive ? "●" : "○"} ${x.id} (${x.alive ? x.tools + " tools" : "down"})`).join("\n")
+    ? list.map((x) => `${x.alive ? "\u25cf" : "\u25cb"} ${x.id} (${x.alive ? x.tools + " tools" : "down"})`).join("\n")
     : "";
+  if (gateway) {
+    if (s.connected && (aiList.length > 0 || s.gatewayUrl)) {
+      const lines = [];
+      if (s.gatewayUrl) lines.push(`Gateway: ${s.gatewayUrl}`);
+      for (const p of aiList) {
+        const modelInfo = p.defaultModel ? ` (${p.defaultModel})` : "";
+        lines.push(`${p.enabled ? "\u25cf" : "\u25cb"} ${p.id}${modelInfo}`);
+      }
+      gateway.textContent = lines.join("\n");
+    } else {
+      gateway.textContent = "";
+    }
+  }
 }
 
 function refresh() {
@@ -44,9 +59,9 @@ document.getElementById("reconnect").addEventListener("click", () => {
   chrome.runtime.sendMessage({ type: "reconnect" }, () => setTimeout(refresh, 600));
 });
 document.getElementById("restart").addEventListener("click", (e) => {
-  e.target.textContent = "Restarting…";
+  e.target.textContent = "Restarting\u2026";
   chrome.runtime.sendMessage({ type: "restart_mcp" }, () => {
-    e.target.textContent = "⟳ Restart";
+    e.target.textContent = "\u27f3 Restart";
     setTimeout(refresh, 600);
   });
 });

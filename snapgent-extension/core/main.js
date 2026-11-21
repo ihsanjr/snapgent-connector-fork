@@ -1127,6 +1127,8 @@
         type: "spawn_subagent",
         task,
         provider,
+        model: typeof args.model === "string" ? args.model.trim() : undefined,
+        fallback: args.fallback !== false,
         target_server: selectedTargetId,
         auto_close: args.auto_close !== false,
         temporary: Boolean(args.temporary || args.auto_delete),
@@ -1136,7 +1138,8 @@
         return `ERROR: Subagent failed - ${(res && res.error) || "unknown error"}`;
       }
       const outText = String(res.result || "").trim() || "(Subagent completed with no text output.)";
-      return `Output of 'spawn_subagent' (${res.provider || provider}):\n${outText}`;
+      const provLabel = res.model ? `${res.provider || provider}/${res.model}` : (res.provider || provider);
+      return `Output of 'spawn_subagent' (${provLabel}):\n${outText}`;
     }
     // Virtual command: delegate multiple isolated subtasks in parallel across browser tabs.
     if (bareName === "spawn_subagents") {
@@ -1151,6 +1154,8 @@
         type: "spawn_subagents",
         tasks,
         provider: defaultProvider,
+        model: typeof args.model === "string" ? args.model.trim() : undefined,
+        fallback: args.fallback !== false,
         target_server: selectedTargetId,
         auto_close: args.auto_close !== false,
         temporary: Boolean(args.temporary || args.auto_delete),
@@ -1160,7 +1165,8 @@
         return `ERROR: Parallel subagents failed - ${(res && res.error) || "unknown error"}`;
       }
       const sections = res.results.map((item) => {
-        const label = `#${item.index + 1} [${item.provider || defaultProvider}]`;
+        const provLabel = item.model ? `${item.provider || defaultProvider}/${item.model}` : (item.provider || defaultProvider);
+        const label = `#${item.index + 1} [${provLabel}]`;
         if (!item.ok) return `${label}: ERROR - ${item.error || "unknown error"}`;
         const body = String(item.result || "").trim() || "(Subagent completed with no text output.)";
         return `${label}:\n${body}`;

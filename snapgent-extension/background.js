@@ -105,7 +105,7 @@ const FAST_TIMEOUT = 6000;
 // waiting two minutes just to learn the bridge is offline.
 const FAST_TYPES = new Set([
   "ping", "studio_status", "list_mcp_servers", "get_servers",
-  "list_tools", "get_tools", "capabilities",
+  "list_tools", "get_tools", "capabilities", "list_ai_providers",
 ]);
 // How long to wait for a socket that is not open before declaring it offline.
 // The reconnect ceiling is 2s and connecting to a LOCAL socket takes a few ms,
@@ -136,6 +136,9 @@ const pending = new Map(); // id -> {resolve, timer}
 let toolsCache = [];
 let mcpAlive = false;
 let serversCache = [];
+let aiProvidersCache = [];
+let routingCache = null;
+let gatewayUrl = null;
 let bridgeVersion = null;
 // true/false = a PLACE is loaded and usable in Roblox Studio; null = unknown.
 // The MCP process stays alive when Studio is closed or its MCP option is off,
@@ -199,6 +202,9 @@ function connect() {
     studioApp = null;
     studioProc = null;
     serversCache = [];
+    aiProvidersCache = [];
+    routingCache = null;
+    gatewayUrl = null;
     bridgeVersion = null;
     stopHeartbeat();
     failAllPending("bridge connection closed");
@@ -370,6 +376,9 @@ function handleBridgeMessage(msg) {
     mcpAlive = !!msg.mcp_alive;
     if (Array.isArray(msg.tools)) toolsCache = msg.tools;
     if (Array.isArray(msg.servers)) serversCache = msg.servers;
+    if (Array.isArray(msg.ai_providers)) aiProvidersCache = msg.ai_providers;
+    if (msg.routing && typeof msg.routing === "object") routingCache = msg.routing;
+    if (typeof msg.gateway_url === "string") gatewayUrl = msg.gateway_url;
     broadcastStatus();
     return;
   }
@@ -406,6 +415,31 @@ function handleBridgeMessage(msg) {
     resolvePending(msg.id, { ok: !!msg.ok, error: msg.error, restarting: !!msg.restarting });
     return;
   }
+  if (msg.type === "ai_providers") {
+    if (Array.isArray(msg.providers)) aiProvidersCache = msg.providers;
+    if (msg.routing && typeof msg.routing === "object") routingCache = msg.routing;
+    if (typeof msg.gateway_url === "string") gatewayUrl = msg.gateway_url;
+    resolvePending(msg.id, {
+      ok: !!msg.ok,
+      providers: aiProvidersCache,
+      routing: routingCache,
+      models: msg.models || [],
+      gateway_url: gatewayUrl,
+    });
+    broadcastStatus();
+    return;
+  }
+  if (msg.type === "ai_provider_updated") {
+    if (Array.isArray(msg.providers)) aiProvidersCache = msg.providers;
+    if (msg.routing && typeof msg.routing === "object") routingCache = msg.routing;
+    resolvePending(msg.id, { ok: !!msg.ok, providers: aiProvidersCache, routing: routingCache, error: msg.error });
+    broadcastStatus();
+    return;
+  }
+  if (msg.type === "chat_completion_result" || msg.type === "gateway_subagent_result") {
+    resolvePending(msg.id, msg);
+    return;
+  }
   if (msg.type === "error") {
     resolvePending(msg.id, { ok: false, error: msg.error });
     return;
@@ -433,7 +467,7 @@ function failAllPending(reason) {
 
 // ── status push to any open DeepSeek tab + popup ─────────────────────────
 function statusObj() {
-  return { type: "zs-status", connected, mcpAlive, bridgeVersion, studio: studioConnected, studioApp, studioProc, tools: toolsCache.length, servers: serversCache };
+  return { type: "zs-status", connected, mcpAlive, bridgeVersion, studio: studioConnected, studioApp, studioProc, tools: toolsCache.length, servers: serversCache, aiProviders: aiProvidersCache, routing: routingCache, gatewayUrl };
 }
 
 function broadcastStatus() {
@@ -539,15 +573,68 @@ function enqueueSubagentFocus(parentTabId, fn) {
   return run;
 }
 
+function isGatewayApiProvider(rawInput, modelInput) {
+  const raw = typeof rawInput === "string" ? rawInput.trim() : "";
+  const lower = raw.toLowerCase();
+  if (lower === "auto" || lower === "gateway") {
+    return aiProvidersCache.some((p) => p && p.enabled);
+  }
+  const pid = raw.includes("/") ? raw.split("/", 1)[0] : raw;
+  if (pid && aiProvidersCache.some((p) => p && p.enabled && p.id === pid)) {
+    return true;
+  }
+  if (typeof modelInput === "string" && modelInput.includes("/")) {
+    const mpid = modelInput.split("/", 1)[0];
+    if (aiProvidersCache.some((p) => p && p.enabled && p.id === mpid)) return true;
+  }
+  return false;
+}
+
 async function spawnSubagentTab(msg, sender) {
   const task = typeof msg.task === "string" ? msg.task.trim() : "";
   if (!task) return { ok: false, error: "Subagent 'task' parameter is required." };
   const temporary = Boolean(msg.temporary || msg.auto_delete);
+  const timeoutMs = Math.max(30000, Math.min(Number(msg.timeout) || 240000, 600000));
+  const allowFallback = msg.fallback !== false;
+
+  // Hybrid Gateway path: run headless via bridge OpenAI-compatible API when provider/model matches.
+  if (connected && isGatewayApiProvider(msg.provider, msg.model)) {
+    const gwRes = await send(
+      {
+        type: "gateway_subagent",
+        task,
+        provider: msg.provider,
+        model: msg.model,
+        target_server: msg.target_server || "vscode",
+        allow_tools: msg.allow_tools !== false,
+        timeout: timeoutMs,
+      },
+      timeoutMs + 10000
+    );
+    if (gwRes && gwRes.ok) {
+      return {
+        ok: true,
+        provider: gwRes.provider || msg.provider,
+        model: gwRes.model || msg.model || "",
+        result: gwRes.result || "",
+        via: "gateway",
+      };
+    }
+    if (!allowFallback || !(gwRes && gwRes.fallback_browser)) {
+      return {
+        ok: false,
+        error: (gwRes && gwRes.error) || "Gateway subagent failed.",
+        provider: (gwRes && gwRes.provider) || msg.provider,
+      };
+    }
+    log(`gateway subagent failed (${gwRes.error}); falling back to browser:${gwRes.fallback_browser}`);
+    msg = { ...msg, provider: gwRes.fallback_browser };
+  }
+
   const prov = resolveSubagentProvider(msg.provider, "gemini", temporary);
   if (!prov.ok) return { ok: false, error: prov.error };
   const { provider: resolvedProvider, url } = prov;
   const autoClose = msg.auto_close !== false;
-  const timeoutMs = Math.max(30000, Math.min(Number(msg.timeout) || 240000, 600000));
   const parentTabId = sender && sender.tab ? sender.tab.id : null;
   const subagentId = `sa_${Date.now()}_${nextSubagentSeq++}`;
 
@@ -668,16 +755,25 @@ async function spawnSubagentBatch(msg, sender) {
     if (!task) {
       return { ok: false, error: `Batch task at index ${i} must be a non-empty string.` };
     }
-    const prov = resolveSubagentProvider(isObj && item.provider ? item.provider : defaultProvider, "gemini");
-    if (!prov.ok) {
-      return { ok: false, error: `Batch task at index ${i}: ${prov.error}` };
+    const rawProv = isObj && item.provider ? item.provider : defaultProvider;
+    const itemModel = (isObj && item.model) || msg.model;
+    const useApi = connected && isGatewayApiProvider(rawProv, itemModel);
+    let resolvedProvName = rawProv;
+    if (!useApi) {
+      const prov = resolveSubagentProvider(rawProv, "gemini");
+      if (!prov.ok) {
+        return { ok: false, error: `Batch task at index ${i}: ${prov.error}` };
+      }
+      resolvedProvName = prov.provider;
     }
     const itemTemp = isObj && (typeof item.temporary === "boolean" || typeof item.auto_delete === "boolean")
       ? Boolean(item.temporary || item.auto_delete)
       : defaultTemporary;
     normalized.push({
       task,
-      provider: prov.provider,
+      provider: resolvedProvName,
+      model: itemModel,
+      fallback: isObj && typeof item.fallback === "boolean" ? item.fallback : (msg.fallback !== false),
       auto_close: isObj && typeof item.auto_close === "boolean" ? item.auto_close : defaultAutoClose,
       temporary: itemTemp,
       timeout: isObj && typeof item.timeout === "number" ? item.timeout : defaultTimeout,
@@ -771,6 +867,40 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       case "restart_mcp": {
         const r = await send({ type: "restart_mcp" }, 30000);
+        sendResponse(r);
+        break;
+      }
+      case "list_ai_providers": {
+        const r = await send({ type: "list_ai_providers" }, FAST_TIMEOUT);
+        if (r && r.ok) sendResponse(r);
+        else sendResponse({ ok: aiProvidersCache.length > 0, providers: aiProvidersCache, routing: routingCache, gateway_url: gatewayUrl, error: r && r.error });
+        break;
+      }
+      case "update_ai_provider": {
+        const r = await send({
+          type: "update_ai_provider",
+          provider_id: msg.provider_id,
+          config: msg.config,
+          remove: !!msg.remove,
+          routing: msg.routing,
+        }, 15000);
+        sendResponse(r);
+        break;
+      }
+      case "chat_completion": {
+        const timeout = (msg.timeout || 120000) + 10000;
+        const r = await send({
+          type: "chat_completion",
+          messages: msg.messages,
+          provider: msg.provider,
+          model: msg.model,
+          temperature: msg.temperature,
+          max_tokens: msg.max_tokens,
+          tools: msg.tools,
+          fallback: msg.fallback !== false,
+          timeout: msg.timeout || 120000,
+          profile: msg.profile,
+        }, timeout);
         sendResponse(r);
         break;
       }

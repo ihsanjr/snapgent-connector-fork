@@ -21,7 +21,7 @@ const ok = (name, cond) => {
 
 // ── Minimal chrome + WebSocket stubs ───────────────────────────────────────
 const listeners = [];
-const noEvent = { addListener: () => {} };
+const noEvent = { addListener: () => {}, removeListener: () => {} };
 global.chrome = {
   runtime: {
     onMessage: { addListener: (fn) => listeners.push(fn) },
@@ -71,10 +71,10 @@ const internals = new Function(
   "chrome",
   "WebSocket",
   "ZSGuard",
-  src + "\n; return { send, failAllPending, pending, SUBAGENT_PROVIDER_URLS, SUBAGENT_PROVIDER_ALIASES, resolveSubagentProvider, spawnSubagentTab, spawnSubagentBatch, settleSubagent, subagentSessions, setConnected: (v) => { connected = v; }, setWs: (w) => { ws = w; } };"
+  src + "\n; return { send, failAllPending, resolvePending, pending, SUBAGENT_PROVIDER_URLS, SUBAGENT_PROVIDER_ALIASES, resolveSubagentProvider, isGatewayApiProvider, spawnSubagentTab, spawnSubagentBatch, settleSubagent, subagentSessions, setConnected: (v) => { connected = v; }, setWs: (w) => { ws = w; }, setAiProvidersCache: (list) => { aiProvidersCache = list; } };"
 )(global.chrome, global.WebSocket, ZSGuard);
 
-const { send, failAllPending, pending, SUBAGENT_PROVIDER_URLS, SUBAGENT_PROVIDER_ALIASES, resolveSubagentProvider, spawnSubagentTab, spawnSubagentBatch, settleSubagent, subagentSessions } = internals;
+const { send, failAllPending, resolvePending, pending, SUBAGENT_PROVIDER_URLS, SUBAGENT_PROVIDER_ALIASES, resolveSubagentProvider, isGatewayApiProvider, spawnSubagentTab, spawnSubagentBatch, settleSubagent, subagentSessions } = internals;
 
 (async () => {
   // ── 1. Nothing connected: the request never left ─────────────────────────
@@ -172,6 +172,64 @@ const { send, failAllPending, pending, SUBAGENT_PROVIDER_URLS, SUBAGENT_PROVIDER
     const handled = settleSubagent("sa_test_1", { ok: true, result: "done" });
     clearTimeout(fakeTimer);
     ok("settleSubagent cleans up session, closes tab when autoClose is true, and resolves", handled === true && !subagentSessions.has("sa_test_1") && closedTabId === 42 && settledPayload && settledPayload.ok === true);
+
+    // Hybrid AI Gateway routing tests.
+    internals.setAiProvidersCache([
+      { id: "ollama", enabled: true, defaultModel: "llama3.2" },
+      { id: "openrouter", enabled: false, defaultModel: "openai/gpt-4o-mini" },
+    ]);
+    ok("isGatewayApiProvider matches enabled provider, model prefix, and auto", isGatewayApiProvider("ollama") === true && isGatewayApiProvider("ollama/llama3.2") === true && isGatewayApiProvider("auto") === true && isGatewayApiProvider("openrouter") === false && isGatewayApiProvider("claude") === false);
+
+    const sentFrames = [];
+    const gwWs = { readyState: 1, send: (data) => sentFrames.push(data), close: () => {} };
+    internals.setWs(gwWs);
+    internals.setConnected(true);
+    const gwPromise = spawnSubagentTab({ task: "Summarize file", provider: "ollama", target_server: "vscode" }, {});
+    await new Promise((r) => setTimeout(r, 10));
+    const gwReq = JSON.parse(sentFrames[0]);
+    ok("spawnSubagentTab dispatches gateway_subagent for enabled API provider", gwReq.type === "gateway_subagent" && gwReq.provider === "ollama" && gwReq.task === "Summarize file");
+    resolvePending(gwReq.id, { type: "gateway_subagent_result", id: gwReq.id, ok: true, provider: "ollama", model: "llama3.2", result: "headless-ok" });
+    const gwOut = await gwPromise;
+    ok("spawnSubagentTab returns headless gateway result", gwOut && gwOut.ok === true && gwOut.via === "gateway" && gwOut.result === "headless-ok");
+
+    // Gateway failure with fallback: false returns error directly without opening a browser tab.
+    const gwNoFbPromise = spawnSubagentTab({ task: "Fail no fallback", provider: "ollama", fallback: false }, {});
+    await new Promise((r) => setTimeout(r, 10));
+    const gwNoFbReq = JSON.parse(sentFrames[1]);
+    resolvePending(gwNoFbReq.id, { type: "gateway_subagent_result", id: gwNoFbReq.id, ok: false, error: "503 down", fallback_browser: "claude" });
+    const gwNoFbOut = await gwNoFbPromise;
+    ok("spawnSubagentTab respects fallback: false on gateway error", gwNoFbOut && gwNoFbOut.ok === false && /503 down/.test(gwNoFbOut.error));
+
+    // Gateway failure with fallback_browser opens the fallback browser tab.
+    const origTabsCreate = chrome.tabs.create;
+    const origTabsGet = chrome.tabs.get;
+    let fallbackTabOpts = null;
+    chrome.tabs.create = (opts) => {
+      fallbackTabOpts = opts;
+      return Promise.resolve({ id: 777 });
+    };
+    chrome.tabs.get = (_id, cb) => cb && cb({ status: "complete" });
+    const gwFbPromise = spawnSubagentTab({ task: "Fallback to browser", provider: "ollama" }, {});
+    await new Promise((r) => setTimeout(r, 10));
+    const gwFbReq = JSON.parse(sentFrames[2]);
+    resolvePending(gwFbReq.id, { type: "gateway_subagent_result", id: gwFbReq.id, ok: false, error: "503 down", fallback_browser: "claude" });
+    await new Promise((r) => setTimeout(r, 20));
+    const fbSessionEntry = [...subagentSessions.entries()].find(([, s]) => s.provider === "claude");
+    if (fbSessionEntry) {
+      settleSubagent(fbSessionEntry[0], { ok: true, provider: "claude", result: "browser-fallback-ok" });
+    }
+    const gwFbOut = await gwFbPromise;
+    chrome.tabs.create = origTabsCreate;
+    chrome.tabs.get = origTabsGet;
+    ok(
+      "spawnSubagentTab opens fallback browser tab when gateway fails with fallback_browser",
+      Boolean(fallbackTabOpts) && fallbackTabOpts.url === SUBAGENT_PROVIDER_URLS.claude && gwFbOut && gwFbOut.ok === true && gwFbOut.result === "browser-fallback-ok"
+    );
+
+    // Cleanup fake socket state.
+    internals.setWs(null);
+    internals.setConnected(false);
+    internals.setAiProvidersCache([]);
   }
 })().catch((e) => {
   console.error(e);

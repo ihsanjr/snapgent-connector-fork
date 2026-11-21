@@ -19,6 +19,8 @@ try:
 except ImportError:
     websockets = None
 
+from ai_gateway import AIGateway, start_http_gateway
+
 
 if getattr(sys, "frozen", False):
     # PyInstaller build: config.json and logs live next to the .exe, not in the temp extraction dir.
@@ -29,6 +31,7 @@ CONFIG_PATH = ROOT / "config.json"
 LOG_PATH = ROOT / "logs" / "bridge_debug.log"
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("ZS_BRIDGE_PORT", "17613"))
+HTTP_PORT = int(os.environ.get("ZS_GATEWAY_PORT", str(PORT + 1)))
 MCP_PROTOCOL_VERSION = "2024-11-05"
 BRIDGE_VERSION = "3.9.7"
 MAX_LOG_CHARS = 1000
@@ -308,6 +311,7 @@ class Bridge:
         self._client_lock = asyncio.Lock()
         self._catalog: List[Dict[str, Any]] = []
         self._last_studio: Optional[bool] = None
+        self.gateway = AIGateway(CONFIG_PATH, logger=log)
 
     def load_config(self) -> Dict[str, Dict[str, Any]]:
         if not CONFIG_PATH.exists():
@@ -328,6 +332,8 @@ class Bridge:
         }
 
     async def start_servers(self) -> None:
+        self.gateway.config_path = CONFIG_PATH
+        self.gateway.reload()
         config = self.load_config()
         self.servers = {
             server_id: MCPServer(server_id, server_config)
@@ -397,6 +403,9 @@ class Bridge:
             "mcp_alive": any(server.alive for server in self.servers.values()),
             "tools": self._catalog,
             "servers": self._server_status(),
+            "ai_providers": self.gateway.list_providers(),
+            "routing": self.gateway.routing,
+            "gateway_url": f"http://{HOST}:{HTTP_PORT}/v1",
         }
 
     async def broadcast(self, message: Dict[str, Any]) -> None:
@@ -524,6 +533,85 @@ class Bridge:
             await self._change_server(websocket, request, remove=False)
         elif kind == "remove_server":
             await self._change_server(websocket, request, remove=True)
+        elif kind == "list_ai_providers":
+            self.gateway.config_path = CONFIG_PATH
+            self.gateway.reload()
+            await self._send_client(
+                websocket,
+                {
+                    "type": "ai_providers",
+                    "id": request_id,
+                    "ok": True,
+                    "providers": self.gateway.list_providers(),
+                    "routing": self.gateway.routing,
+                    "models": self.gateway.list_models(),
+                    "gateway_url": f"http://{HOST}:{HTTP_PORT}/v1",
+                },
+            )
+        elif kind == "update_ai_provider":
+            try:
+                self.gateway.config_path = CONFIG_PATH
+                self.gateway.update_config(
+                    provider_id=request.get("provider_id"),
+                    provider_config=request.get("config"),
+                    remove=bool(request.get("remove", False)),
+                    routing=request.get("routing"),
+                )
+                await self._send_client(
+                    websocket,
+                    {
+                        "type": "ai_provider_updated",
+                        "id": request_id,
+                        "ok": True,
+                        "providers": self.gateway.list_providers(),
+                        "routing": self.gateway.routing,
+                    },
+                )
+                await self.broadcast(self._connected_message())
+            except (OSError, json.JSONDecodeError, RuntimeError) as error:
+                await self._send_client(
+                    websocket,
+                    {"type": "ai_provider_updated", "id": request_id, "ok": False, "error": str(error)},
+                )
+        elif kind == "chat_completion":
+            messages = request.get("messages")
+            if not isinstance(messages, list) or not messages:
+                await self._send_client(
+                    websocket,
+                    {"type": "chat_completion_result", "id": request_id, "ok": False, "error": "messages array is required."},
+                )
+                return
+            res = await self.gateway.chat_completion(
+                messages=messages,
+                provider=request.get("provider"),
+                model=request.get("model"),
+                temperature=request.get("temperature"),
+                max_tokens=request.get("max_tokens"),
+                tools=request.get("tools"),
+                fallback=request.get("fallback", True),
+                timeout=float(request.get("timeout", 120000)) / 1000.0,
+                profile=request.get("profile"),
+            )
+            await self._send_client(websocket, {"type": "chat_completion_result", "id": request_id, **res})
+        elif kind == "gateway_subagent":
+            task = str(request.get("task") or "").strip()
+            if not task:
+                await self._send_client(
+                    websocket,
+                    {"type": "gateway_subagent_result", "id": request_id, "ok": False, "error": "task is required."},
+                )
+                return
+            timeout_s = max(15.0, min(float(request.get("timeout", 180000)) / 1000.0, 600.0))
+            res = await self.gateway.run_subagent(
+                task=task,
+                target_server=str(request.get("target_server") or "vscode"),
+                mcp_servers=self.servers,
+                provider=request.get("provider"),
+                model=request.get("model"),
+                allow_tools=request.get("allow_tools", True) is not False,
+                timeout=timeout_s,
+            )
+            await self._send_client(websocket, {"type": "gateway_subagent_result", "id": request_id, **res})
         else:
             await self._send_client(
                 websocket,
@@ -804,6 +892,12 @@ async def run() -> None:
     )
     log(f"snapgent bridge v{BRIDGE_VERSION}")
     log(f"listening on ws://{HOST}:{PORT} - load the extension and open a supported AI chat")
+    http_server = None
+    try:
+        http_server = await start_http_gateway(bridge, HOST, HTTP_PORT)
+        log(f"AI gateway listening on http://{HOST}:{HTTP_PORT}/v1")
+    except OSError as error:
+        log(f"AI gateway HTTP server disabled (port {HTTP_PORT} unavailable): {error}")
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
     async def _startup_then_monitor() -> None:
@@ -828,6 +922,9 @@ async def run() -> None:
         await asyncio.gather(monitor_task, return_exceptions=True)
         server.close()
         await server.wait_closed()
+        if http_server is not None:
+            http_server.close()
+            await http_server.wait_closed()
         await bridge.stop_servers()
         log("bridge stopped")
 

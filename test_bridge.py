@@ -55,6 +55,12 @@ MOCK_SLOW_MCP = "import time\n" + MOCK_MCP.replace(
 
 
 class BridgeTests(unittest.IsolatedAsyncioTestCase):
+    async def _recv_non_progress(self, client, timeout=10.0):
+        while True:
+            msg = json.loads(await asyncio.wait_for(client.recv(), timeout))
+            if msg.get("type") != "tool_progress":
+                return msg
+
     @contextlib.asynccontextmanager
     async def _ws_client(self, root, script):
         mock_path = root / "mock_mcp.py"
@@ -172,7 +178,7 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
                                     }
                                 )
                             )
-                            result = json.loads(await client.recv())
+                            result = await self._recv_non_progress(client, 5.0)
                             self.assertTrue(result["ok"])
                             self.assertEqual(result["text"], "round trip")
                 finally:
@@ -196,9 +202,9 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
                     )
                 )
                 await client.send(json.dumps({"id": 2, "type": "ping"}))
-                first = json.loads(await asyncio.wait_for(client.recv(), 1.0))
+                first = await self._recv_non_progress(client, 1.0)
                 self.assertEqual(first["type"], "pong")
-                second = json.loads(await asyncio.wait_for(client.recv(), 8))
+                second = await self._recv_non_progress(client, 8.0)
                 self.assertTrue(second["ok"])
                 self.assertEqual(second["text"], "slow")
 
@@ -218,7 +224,7 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
                         }
                     )
                 )
-                result = json.loads(await asyncio.wait_for(client.recv(), 20))
+                result = await self._recv_non_progress(client, 20.0)
                 self.assertTrue(result["ok"])
                 self.assertEqual(result["text"], big_message)
 
