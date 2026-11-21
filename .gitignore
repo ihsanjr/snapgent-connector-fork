@@ -5,6 +5,8 @@ ExtensionPresentation/
 herdodp/
 presentation/
 config.json
+.snapgent/skills/security-audit/
+.snapgent/skills/trufflehog/
 
 # Build output and local backups
 routergent/
