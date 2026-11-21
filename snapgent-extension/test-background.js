@@ -31,7 +31,10 @@ global.chrome = {
   },
   tabs: {
     query: (_f, cb) => cb && cb([]),
-    sendMessage: () => Promise.resolve(),
+    sendMessage: (_id, _msg, cb) => {
+      if (typeof cb === "function") cb({ ok: true });
+      return Promise.resolve({ ok: true });
+    },
     get: (_id, cb) => cb && cb(null),
     create: () => Promise.resolve({ id: 999 }),
     update: () => Promise.resolve({}),
@@ -71,10 +74,10 @@ const internals = new Function(
   "chrome",
   "WebSocket",
   "ZSGuard",
-  src + "\n; return { send, failAllPending, resolvePending, pending, SUBAGENT_PROVIDER_URLS, SUBAGENT_PROVIDER_ALIASES, resolveSubagentProvider, isGatewayApiProvider, spawnSubagentTab, spawnSubagentBatch, settleSubagent, subagentSessions, setConnected: (v) => { connected = v; }, setWs: (w) => { ws = w; }, setAiProvidersCache: (list) => { aiProvidersCache = list; } };"
+  src + "\n; return { send, failAllPending, resolvePending, handleBridgeMessage, pending, SUBAGENT_PROVIDER_URLS, SUBAGENT_PROVIDER_ALIASES, resolveSubagentProvider, isGatewayApiProvider, spawnSubagentTab, spawnSubagentBatch, settleSubagent, subagentSessions, setConnected: (v) => { connected = v; }, setWs: (w) => { ws = w; }, setAiProvidersCache: (list) => { aiProvidersCache = list; } };"
 )(global.chrome, global.WebSocket, ZSGuard);
 
-const { send, failAllPending, resolvePending, pending, SUBAGENT_PROVIDER_URLS, SUBAGENT_PROVIDER_ALIASES, resolveSubagentProvider, isGatewayApiProvider, spawnSubagentTab, spawnSubagentBatch, settleSubagent, subagentSessions } = internals;
+const { send, failAllPending, resolvePending, handleBridgeMessage, pending, SUBAGENT_PROVIDER_URLS, SUBAGENT_PROVIDER_ALIASES, resolveSubagentProvider, isGatewayApiProvider, spawnSubagentTab, spawnSubagentBatch, settleSubagent, subagentSessions } = internals;
 
 (async () => {
   // ── 1. Nothing connected: the request never left ─────────────────────────
@@ -224,6 +227,29 @@ const { send, failAllPending, resolvePending, pending, SUBAGENT_PROVIDER_URLS, S
     ok(
       "spawnSubagentTab opens fallback browser tab when gateway fails with fallback_browser",
       Boolean(fallbackTabOpts) && fallbackTabOpts.url === SUBAGENT_PROVIDER_URLS.claude && gwFbOut && gwFbOut.ok === true && gwFbOut.result === "browser-fallback-ok"
+    );
+
+    // Bridge browser_chat message bypasses gateway API (force_browser: true) and replies with browser_chat_result.
+    let browserChatTabOpts = null;
+    chrome.tabs.create = (opts) => {
+      browserChatTabOpts = opts;
+      return Promise.resolve({ id: 888 });
+    };
+    chrome.tabs.get = (_id, cb) => cb && cb({ status: "complete" });
+    const framesBeforeBrowserChat = sentFrames.length;
+    handleBridgeMessage({ type: "browser_chat", id: "bchat_42", provider: "gemini", task: "Reply via browser", timeout: 2000 });
+    await new Promise((r) => setTimeout(r, 20));
+    const bchatSessionEntry = [...subagentSessions.entries()].find(([, s]) => s.provider === "gemini");
+    if (bchatSessionEntry) {
+      settleSubagent(bchatSessionEntry[0], { ok: true, provider: "gemini", result: "browser-chat-ok" });
+    }
+    await new Promise((r) => setTimeout(r, 20));
+    chrome.tabs.create = origTabsCreate;
+    chrome.tabs.get = origTabsGet;
+    const bchatReply = sentFrames.slice(framesBeforeBrowserChat).map((f) => JSON.parse(f)).find((m) => m.type === "browser_chat_result" && m.id === "bchat_42");
+    ok(
+      "handleBridgeMessage handles browser_chat with force_browser and sends browser_chat_result",
+      Boolean(browserChatTabOpts) && browserChatTabOpts.url === SUBAGENT_PROVIDER_URLS.gemini && bchatReply && bchatReply.ok === true && bchatReply.result === "browser-chat-ok"
     );
 
     // Cleanup fake socket state.

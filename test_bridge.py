@@ -276,6 +276,106 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(manager._resolve_tool("effectcraft/get_state")[0], second)
         self.assertIsNone(manager._resolve_tool("get_state")[0])
 
+    async def test_execute_browser_chat_without_extension_returns_error(self):
+        manager = bridge.Bridge()
+        res = await manager.execute_browser_chat(
+            provider="gemini",
+            messages=[{"role": "user", "content": "ping"}],
+        )
+        self.assertFalse(res["ok"])
+        self.assertIn("No Snapgent browser extension", res["error"])
+
+    @unittest.skipIf(bridge.websockets is None, "websockets package is not installed")
+    async def test_execute_browser_chat_roundtrip_over_websocket(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = bridge.Bridge()
+            with patch.object(bridge, "CONFIG_PATH", Path(temp_dir) / "config.json"):
+                server = await bridge.websockets.serve(
+                    manager.handle_client,
+                    "127.0.0.1",
+                    0,
+                    max_size=None,
+                )
+                port = server.sockets[0].getsockname()[1]
+                try:
+                    async with bridge.websockets.connect(f"ws://127.0.0.1:{port}") as client:
+                        connected_msg = json.loads(await asyncio.wait_for(client.recv(), timeout=5.0))
+                        self.assertEqual(connected_msg["type"], "connected")
+
+                        task = asyncio.create_task(
+                            manager.execute_browser_chat(
+                                provider="claude",
+                                messages=[
+                                    {"role": "system", "content": "Be brief."},
+                                    {"role": "user", "content": "Say hi"},
+                                ],
+                                timeout=30.0,
+                            )
+                        )
+                        req = json.loads(await asyncio.wait_for(client.recv(), timeout=5.0))
+                        self.assertEqual(req["type"], "browser_chat")
+                        self.assertEqual(req["provider"], "claude")
+                        self.assertIn("[SYSTEM]", req["task"])
+                        self.assertIn("Say hi", req["task"])
+
+                        await client.send(
+                            json.dumps(
+                                {
+                                    "type": "browser_chat_result",
+                                    "id": req["id"],
+                                    "ok": True,
+                                    "provider": "claude",
+                                    "result": "hello from browser tab",
+                                }
+                            )
+                        )
+                        res = await asyncio.wait_for(task, timeout=5.0)
+                        self.assertTrue(res["ok"])
+                        self.assertEqual(res["provider"], "claude")
+                        self.assertEqual(res["content"], "hello from browser tab")
+                finally:
+                    server.close()
+                    await server.wait_closed()
+
+    @unittest.skipIf(bridge.websockets is None, "websockets package is not installed")
+    async def test_execute_browser_chat_fails_immediately_on_extension_disconnect(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = bridge.Bridge()
+            with patch.object(bridge, "CONFIG_PATH", Path(temp_dir) / "config.json"):
+                server = await bridge.websockets.serve(
+                    manager.handle_client,
+                    "127.0.0.1",
+                    0,
+                    max_size=None,
+                )
+                port = server.sockets[0].getsockname()[1]
+                try:
+                    client = await bridge.websockets.connect(f"ws://127.0.0.1:{port}")
+                    connected_msg = json.loads(await asyncio.wait_for(client.recv(), timeout=5.0))
+                    self.assertEqual(connected_msg["type"], "connected")
+
+                    task = asyncio.create_task(
+                        manager.execute_browser_chat(
+                            provider="gemini",
+                            messages=[{"role": "user", "content": "Hello before drop"}],
+                            timeout=60.0,
+                        )
+                    )
+                    req = json.loads(await asyncio.wait_for(client.recv(), timeout=5.0))
+                    self.assertEqual(req["type"], "browser_chat")
+
+                    # Drop the extension connection before replying.
+                    await client.close()
+
+                    res = await asyncio.wait_for(task, timeout=5.0)
+                    self.assertFalse(res["ok"])
+                    self.assertIn("disconnected", res["error"].lower())
+                    self.assertEqual(len(manager._browser_pending), 0)
+                    self.assertEqual(len(manager._browser_pending_clients), 0)
+                finally:
+                    server.close()
+                    await server.wait_closed()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -233,6 +233,43 @@ class AIGatewayTests(unittest.IsolatedAsyncioTestCase):
                 server.close()
                 await server.wait_closed()
 
+    async def test_explicit_browser_model_and_api_to_browser_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path = self._make_config(Path(tmp))
+            browser_calls = []
+
+            async def fake_browser_executor(provider, messages, timeout):
+                browser_calls.append((provider, messages, timeout))
+                return {"ok": True, "provider": provider, "content": f"browser-reply:{provider}"}
+
+            gw = ai_gateway.AIGateway(cfg_path, browser_executor=fake_browser_executor)
+
+            # 1. Explicit browser/* model skips API candidates and calls browser_executor directly.
+            candidates, browser_fb = gw.resolve_route(model="browser/claude", fallback=True)
+            self.assertEqual(candidates, [])
+            self.assertEqual(browser_fb, "claude")
+
+            res = await gw.chat_completion(model="browser/claude", messages=[{"role": "user", "content": "hello"}])
+            self.assertTrue(res["ok"])
+            self.assertEqual(res["provider"], "browser")
+            self.assertEqual(res["model"], "claude")
+            self.assertEqual(res["content"], "browser-reply:claude")
+            self.assertEqual(len(browser_calls), 1)
+            self.assertEqual(browser_calls[0][0], "claude")
+
+            # 2. When all API providers fail, chat_completion falls back to browser_executor.
+            gw.providers["primary"]["baseUrl"] = "http://127.0.0.1:1/v1"
+            gw.providers["backup"]["baseUrl"] = "http://127.0.0.1:1/v1"
+            res_fb = await gw.chat_completion(messages=[{"role": "user", "content": "fallback please"}])
+            self.assertTrue(res_fb["ok"])
+            self.assertEqual(res_fb["provider"], "browser")
+            self.assertEqual(res_fb["model"], "gemini")
+            self.assertEqual(res_fb["content"], "browser-reply:gemini")
+            self.assertEqual(len(browser_calls), 2)
+            self.assertEqual(browser_calls[1][0], "gemini")
+            self.assertTrue(any(not a["ok"] for a in res_fb["attempts"]))
+            self.assertTrue(res_fb["attempts"][-1]["ok"])
+
 
 if __name__ == "__main__":
     unittest.main()

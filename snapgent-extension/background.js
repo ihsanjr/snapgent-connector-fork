@@ -440,6 +440,38 @@ function handleBridgeMessage(msg) {
     resolvePending(msg.id, msg);
     return;
   }
+  if (msg.type === "browser_chat") {
+    spawnSubagentTab(
+      {
+        provider: msg.provider || "gemini",
+        task: msg.task || "",
+        timeout: msg.timeout || 180000,
+        auto_close: msg.auto_close !== false,
+        temporary: Boolean(msg.temporary),
+        fallback: false,
+        force_browser: true,
+      },
+      null
+    )
+      .then((res) => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "browser_chat_result", id: msg.id, ...res }));
+        }
+      })
+      .catch((err) => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(
+            JSON.stringify({
+              type: "browser_chat_result",
+              id: msg.id,
+              ok: false,
+              error: (err && err.message) || String(err),
+            })
+          );
+        }
+      });
+    return;
+  }
   if (msg.type === "error") {
     resolvePending(msg.id, { ok: false, error: msg.error });
     return;
@@ -598,7 +630,7 @@ async function spawnSubagentTab(msg, sender) {
   const allowFallback = msg.fallback !== false;
 
   // Hybrid Gateway path: run headless via bridge OpenAI-compatible API when provider/model matches.
-  if (connected && isGatewayApiProvider(msg.provider, msg.model)) {
+  if (!msg.force_browser && connected && isGatewayApiProvider(msg.provider, msg.model)) {
     const gwRes = await send(
       {
         type: "gateway_subagent",

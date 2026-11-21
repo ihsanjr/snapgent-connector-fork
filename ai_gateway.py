@@ -93,9 +93,15 @@ def _mcp_tools_to_openai(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 class AIGateway:
     """Manages OpenAI-compatible AI providers, model routing, and fallback chains."""
 
-    def __init__(self, config_path: Path, logger: Optional[Callable[[str], None]] = None) -> None:
+    def __init__(
+        self,
+        config_path: Path,
+        logger: Optional[Callable[[str], None]] = None,
+        browser_executor: Optional[Callable[..., Any]] = None,
+    ) -> None:
         self.config_path = config_path
         self._log = logger or (lambda _msg: None)
+        self.browser_executor = browser_executor
         self.providers: Dict[str, Dict[str, Any]] = {}
         self.routing: Dict[str, Any] = {
             "defaultProvider": "",
@@ -262,11 +268,17 @@ class AIGateway:
         raw_provider = (provider or "").strip()
         raw_model = (model or "").strip()
 
+        # Support OpenAI-style model="browser/gemini" or "browser:gemini" when provider is omitted.
+        if not raw_provider and (raw_model.startswith("browser/") or raw_model.startswith("browser:")):
+            raw_provider, raw_model = raw_model, ""
+
         # Support OpenAI-style model="ollama/qwen2.5-coder:7b" when provider is omitted.
         if not raw_provider and "/" in raw_model:
             maybe_pid, maybe_model = raw_model.split("/", 1)
             if maybe_pid in self.providers:
                 raw_provider, raw_model = maybe_pid, maybe_model
+
+        explicit_browser = raw_provider.startswith("browser/") or raw_provider.startswith("browser:")
 
         if raw_provider and raw_provider.lower() not in ("auto", "gateway"):
             _add_target(raw_provider, raw_model or None)
@@ -277,7 +289,7 @@ class AIGateway:
         elif self.routing.get("defaultProvider"):
             _add_target(self.routing["defaultProvider"], raw_model or None)
 
-        if fallback:
+        if fallback and not explicit_browser:
             for entry in self.routing.get("fallbackChain", []):
                 if isinstance(entry, str):
                     _add_target(entry, None)
@@ -286,6 +298,10 @@ class AIGateway:
                 for pid, cfg in self.providers.items():
                     if cfg.get("enabled"):
                         _add_target(pid, raw_model or None)
+            if browser_fallback is None:
+                default_browser = str(self.routing.get("defaultBrowserProvider") or "gemini").strip().lower()
+                if default_browser:
+                    browser_fallback = default_browser
 
         return candidates, browser_fallback
 
@@ -308,15 +324,74 @@ class AIGateway:
             fallback=fallback,
             profile=profile,
         )
+        attempts: List[Dict[str, Any]] = []
+
+        async def _try_browser() -> Optional[Dict[str, Any]]:
+            if not browser_fallback or not self.browser_executor:
+                return None
+            started_b = time.monotonic()
+            try:
+                bres = await self.browser_executor(
+                    provider=browser_fallback,
+                    messages=messages,
+                    timeout=timeout,
+                )
+            except Exception as berr:
+                attempts.append(
+                    {
+                        "provider": f"browser/{browser_fallback}",
+                        "model": browser_fallback,
+                        "ok": False,
+                        "error": str(berr) or type(berr).__name__,
+                        "duration_ms": int((time.monotonic() - started_b) * 1000),
+                    }
+                )
+                return None
+            duration_b = int((time.monotonic() - started_b) * 1000)
+            if isinstance(bres, dict) and bres.get("ok"):
+                content_b = str(bres.get("content") or bres.get("result") or "")
+                used_b = str(bres.get("provider") or browser_fallback)
+                attempts.append(
+                    {
+                        "provider": f"browser/{used_b}",
+                        "model": used_b,
+                        "ok": True,
+                        "duration_ms": duration_b,
+                    }
+                )
+                return {
+                    "ok": True,
+                    "provider": "browser",
+                    "model": used_b,
+                    "content": content_b,
+                    "message": {"role": "assistant", "content": content_b},
+                    "usage": {},
+                    "raw": bres,
+                    "attempts": attempts,
+                }
+            err_b = (bres.get("error") if isinstance(bres, dict) else None) or "Browser extension execution failed."
+            attempts.append(
+                {
+                    "provider": f"browser/{browser_fallback}",
+                    "model": browser_fallback,
+                    "ok": False,
+                    "error": str(err_b),
+                    "duration_ms": duration_b,
+                }
+            )
+            return None
+
         if not candidates:
+            browser_res = await _try_browser()
+            if browser_res:
+                return browser_res
+            last_err = attempts[-1]["error"] if attempts else "No enabled OpenAI-compatible provider matched the request."
             return {
                 "ok": False,
-                "error": "No enabled OpenAI-compatible provider matched the request.",
-                "attempts": [],
+                "error": last_err,
+                "attempts": attempts,
                 "fallback_browser": browser_fallback,
             }
-
-        attempts: List[Dict[str, Any]] = []
         for pid, mname in candidates:
             cfg = self.providers[pid]
             base_url = _resolve_env(cfg["baseUrl"]).rstrip("/")
@@ -348,16 +423,17 @@ class AIGateway:
             try:
                 status, data = await asyncio.to_thread(_http_post_json, url, headers, payload, timeout)
             except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, ValueError) as err:
+                err_text = str(err).strip() or type(err).__name__
                 attempts.append(
                     {
                         "provider": pid,
                         "model": mname,
                         "ok": False,
-                        "error": str(err),
+                        "error": err_text,
                         "duration_ms": int((time.monotonic() - started) * 1000),
                     }
                 )
-                self._log(f"[gateway] {pid}/{mname} failed: {err}")
+                self._log(f"[gateway] {pid}/{mname} failed: {err_text}")
                 continue
 
             duration_ms = int((time.monotonic() - started) * 1000)
@@ -406,6 +482,10 @@ class AIGateway:
                 "raw": data,
                 "attempts": attempts,
             }
+
+        browser_res = await _try_browser()
+        if browser_res:
+            return browser_res
 
         last_err = attempts[-1]["error"] if attempts else "All providers failed."
         return {

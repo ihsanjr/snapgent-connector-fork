@@ -311,7 +311,9 @@ class Bridge:
         self._client_lock = asyncio.Lock()
         self._catalog: List[Dict[str, Any]] = []
         self._last_studio: Optional[bool] = None
-        self.gateway = AIGateway(CONFIG_PATH, logger=log)
+        self._browser_pending: Dict[str, asyncio.Future] = {}
+        self._browser_pending_clients: Dict[str, Any] = {}
+        self.gateway = AIGateway(CONFIG_PATH, logger=log, browser_executor=self.execute_browser_chat)
 
     def load_config(self) -> Dict[str, Dict[str, Any]]:
         if not CONFIG_PATH.exists():
@@ -483,6 +485,12 @@ class Bridge:
                 await asyncio.gather(*pending, return_exceptions=True)
             async with self._client_lock:
                 self.clients.discard(websocket)
+            for req_id, req_client in list(self._browser_pending_clients.items()):
+                if req_client is websocket:
+                    self._browser_pending_clients.pop(req_id, None)
+                    fut = self._browser_pending.pop(req_id, None)
+                    if fut and not fut.done():
+                        fut.set_result({"ok": False, "error": "Snapgent browser extension disconnected before replying."})
             log("extension disconnected")
 
     async def _handle_request(self, websocket: Any, request: Dict[str, Any]) -> None:
@@ -612,11 +620,85 @@ class Bridge:
                 timeout=timeout_s,
             )
             await self._send_client(websocket, {"type": "gateway_subagent_result", "id": request_id, **res})
+        elif kind == "browser_chat_result":
+            req_key = str(request_id)
+            fut = self._browser_pending.pop(req_key, None)
+            self._browser_pending_clients.pop(req_key, None)
+            if fut and not fut.done():
+                fut.set_result(request)
         else:
             await self._send_client(
                 websocket,
                 {"type": "error", "id": request_id, "error": f"Unknown bridge request: {kind}"},
             )
+
+    async def execute_browser_chat(
+        self,
+        provider: str,
+        messages: List[Dict[str, Any]],
+        timeout: float = 180.0,
+    ) -> Dict[str, Any]:
+        async with self._client_lock:
+            client = next(iter(self.clients), None)
+        if client is None:
+            return {"ok": False, "error": "No Snapgent browser extension is connected to the bridge."}
+
+        parts: List[str] = []
+        for m in messages:
+            if not isinstance(m, dict):
+                continue
+            role = str(m.get("role") or "user").strip().lower()
+            content = m.get("content")
+            if isinstance(content, list):
+                text = "\n".join(
+                    str(p.get("text") or "") for p in content if isinstance(p, dict) and p.get("text")
+                )
+            else:
+                text = str(content or "")
+            text = text.strip()
+            if not text:
+                continue
+            if len(messages) == 1 and role == "user":
+                parts.append(text)
+            else:
+                parts.append(f"[{role.upper()}]\n{text}")
+        prompt = "\n\n".join(parts).strip()
+        if not prompt:
+            return {"ok": False, "error": "Empty prompt in messages."}
+
+        req_id = f"bchat_{int(time.time() * 1000)}_{len(self._browser_pending) + 1}"
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future = loop.create_future()
+        self._browser_pending[req_id] = fut
+        self._browser_pending_clients[req_id] = client
+
+        timeout_ms = int(max(30.0, min(timeout, 600.0)) * 1000)
+        await self._send_client(
+            client,
+            {
+                "type": "browser_chat",
+                "id": req_id,
+                "provider": provider,
+                "task": prompt,
+                "timeout": timeout_ms,
+            },
+        )
+        try:
+            res = await asyncio.wait_for(fut, timeout=max(35.0, min(timeout + 10.0, 610.0)))
+        except asyncio.TimeoutError:
+            self._browser_pending.pop(req_id, None)
+            self._browser_pending_clients.pop(req_id, None)
+            return {"ok": False, "error": f"Browser provider '{provider}' timed out."}
+        if isinstance(res, dict) and res.get("ok"):
+            return {
+                "ok": True,
+                "provider": str(res.get("provider") or provider),
+                "content": str(res.get("result") or res.get("content") or ""),
+            }
+        return {
+            "ok": False,
+            "error": str((res.get("error") if isinstance(res, dict) else None) or "Browser execution failed."),
+        }
 
     async def _call_tool(self, websocket: Any, request: Dict[str, Any]) -> None:
         request_id = request.get("id")
